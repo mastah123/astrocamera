@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -144,8 +145,9 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
     }
     LaunchedEffect(settings) { controller.update(settings) }
 
+    // The preview stays fixed at the top; only the controls below it scroll.
     Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
+        modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (config != null) {
@@ -170,7 +172,13 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
             )
         }
 
-        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             when {
                 !hasPermission -> {
                     Text("Camera permission is needed for the preview.")

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-05
+
+### Fixed
+- Astro Camera preview scrolled away with the controls. It now stays fixed at the top while only the controls scroll.
+
 ## [0.6.0] - 2026-11-05
 
 ### Added
