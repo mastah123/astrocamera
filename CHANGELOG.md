@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-05
+
+### Added
+- Astro Camera screen with a live Camera2 preview.
+- Manual exposure, ISO and focus controls, with an Infinity button for focus.
+- Exposure slider capped at the verified limit from the device profile; an unverified camera is capped at 1/30 s.
+- Live readout of the exposure, ISO and frame time the camera reports.
+- Auto exposure and focus mode.
+- Camera permission request, and preview stops and restarts with the app lifecycle.
+
+### Changed
+- App is locked to portrait orientation.
+- Home screen opens Astro Camera first.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added

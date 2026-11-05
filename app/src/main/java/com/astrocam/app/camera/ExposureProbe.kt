@@ -283,7 +283,7 @@ object ExposureProbe {
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun openCamera(manager: CameraManager, id: String, handler: Handler): CameraDevice =
+    internal suspend fun openCamera(manager: CameraManager, id: String, handler: Handler): CameraDevice =
         suspendCancellableCoroutine { cont ->
             manager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
@@ -300,7 +300,7 @@ object ExposureProbe {
             }, handler)
         }
 
-    private suspend fun createSession(device: CameraDevice, surface: Surface, handler: Handler): CameraCaptureSession =
+    internal suspend fun createSession(device: CameraDevice, surface: Surface, handler: Handler): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             val config = SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,

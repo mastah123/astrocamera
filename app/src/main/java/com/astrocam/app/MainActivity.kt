@@ -16,7 +16,9 @@ import com.astrocam.app.camera.CameraDetector
 import com.astrocam.app.camera.ProfileStore
 import com.astrocam.app.camera.appVersion
 import com.astrocam.app.camera.buildProfile
+import com.astrocam.app.camera.controlLimits
 import com.astrocam.app.camera.deviceName
+import com.astrocam.app.ui.AstroScreen
 import com.astrocam.app.ui.AstroTheme
 import com.astrocam.app.ui.HomeScreen
 import com.astrocam.app.ui.NightTheme
@@ -24,7 +26,7 @@ import com.astrocam.app.ui.ProbeScreen
 import com.astrocam.app.ui.SettingsScreen
 import com.astrocam.app.ui.TesterScreen
 
-private enum class Screen { Home, Tester, Settings, Probe }
+private enum class Screen { Home, Astro, Tester, Settings, Probe }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +44,7 @@ private fun AstroApp() {
     val profile = remember(cameras, limits) {
         buildProfile(deviceName(), appVersion(context), cameras, limits)
     }
+    val limitsForControls = remember(cameras, profile) { controlLimits(cameras, profile) }
     var night by rememberSaveable { mutableStateOf(NightTheme.Dark) }
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
 
@@ -53,9 +56,11 @@ private fun AstroApp() {
             Screen.Home -> HomeScreen(
                 cameras = cameras,
                 profile = profile,
+                onOpenAstro = { screen = Screen.Astro },
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
+            Screen.Astro -> AstroScreen(limits = limitsForControls, onBack = { screen = Screen.Home })
             Screen.Tester -> TesterScreen(cameras = cameras, limits = limits, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(
                 night = night,

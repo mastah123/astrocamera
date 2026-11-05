@@ -29,6 +29,7 @@ import com.astrocam.app.camera.formatExposure
 fun HomeScreen(
     cameras: List<CameraInfo>,
     profile: DeviceProfile,
+    onOpenAstro: () -> Unit,
     onOpenTester: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -76,7 +77,10 @@ fun HomeScreen(
                 }
             }
 
-            Button(onClick = onOpenTester, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onOpenAstro, modifier = Modifier.fillMaxWidth()) {
+                Text("Astro Camera")
+            }
+            OutlinedButton(onClick = onOpenTester, modifier = Modifier.fillMaxWidth()) {
                 Text("Camera Tester")
             }
             OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
