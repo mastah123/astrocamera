@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+### Added
+- Settings screen with an Experimental section.
+- Test depth choice for the Long Exposure Test: Quick (8 s), Extended (30 s), Deep (2 min) and Extreme (5 min).
+- Brightness check that confirms longer exposures produce brighter frames.
+- Cancel button and keep-screen-on while a test runs.
+- Tested exposure limit saved on the device and shown on the home screen.
+
+### Changed
+- Long Exposure Test moved from the home screen to Settings, Experimental.
+- Red night-vision toggle moved to Settings.
+- Software plan now includes a 5 minute total.
+- Result summary says whether the highest tested value was reached or where the camera stopped honoring requests.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

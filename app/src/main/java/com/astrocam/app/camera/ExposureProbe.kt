@@ -13,35 +13,57 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Range
 import android.view.Surface
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 
+private const val SEC = 1_000_000_000L
+
+internal val BASE_LADDER_NS: List<Long> = listOf(
+    10_000_000L, 100_000_000L, 500_000_000L, 1 * SEC, 2 * SEC, 4 * SEC, 8 * SEC,
+)
+
+/** How far the test climbs. Each step runs only if the previous one was honored. */
+enum class ProbeDepth(val label: String, extraNs: List<Long>) {
+    Quick("Quick - up to 8 s", emptyList()),
+    Extended("Extended - up to 30 s", listOf(15 * SEC, 30 * SEC)),
+    Deep("Deep - up to 2 min", listOf(15 * SEC, 30 * SEC, 60 * SEC, 120 * SEC)),
+    Extreme("Extreme - up to 5 min", listOf(15 * SEC, 30 * SEC, 60 * SEC, 120 * SEC, 300 * SEC));
+
+    val ladderNs: List<Long> = BASE_LADDER_NS + extraNs
+
+    /** Longest the test can take if every step succeeds, in seconds. */
+    val worstCaseSeconds: Int get() = (ladderNs.sum() / SEC).toInt() + ladderNs.size * 2 + 20
+}
+
 /**
  * Sends real manual-exposure requests and reads back what the camera actually
- * used. Phones that do not advertise manual control sometimes honor it anyway.
- * Requires the CAMERA permission.
+ * used, then checks that the frames really get brighter. Phones that do not
+ * advertise manual control sometimes honor it anyway. Requires CAMERA permission.
  */
 object ExposureProbe {
 
-    // Requested exposures. Two or more matching results proves manual control.
-    private val LADDER_NS = longArrayOf(
-        10_000_000L, 100_000_000L, 500_000_000L,
-        1_000_000_000L, 2_000_000_000L, 4_000_000_000L, 8_000_000_000L,
-    )
     private const val TEST_ISO = 800
 
     @SuppressLint("MissingPermission")
-    suspend fun run(context: Context, info: CameraInfo, onProgress: (String) -> Unit): ProbeResult {
+    suspend fun run(
+        context: Context,
+        info: CameraInfo,
+        depth: ProbeDepth,
+        onProgress: (String) -> Unit,
+    ): ProbeResult {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val thread = HandlerThread("exposure-probe").also { it.start() }
         val handler = Handler(thread.looper)
@@ -55,8 +77,20 @@ object ExposureProbe {
                 ?.minByOrNull { it.width * it.height }
                 ?: return failed(info.id, "No YUV output size available.")
 
+            val frameCount = AtomicInteger(0)
+            val lumaX100 = AtomicInteger(-1)
             val imageReader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
-            imageReader.setOnImageAvailableListener({ it.acquireLatestImage()?.close() }, handler)
+            imageReader.setOnImageAvailableListener({ r ->
+                val image = r.acquireLatestImage()
+                if (image != null) {
+                    try {
+                        meanLuma(image)?.let { lumaX100.set((it * 100).toInt()) }
+                        frameCount.incrementAndGet()
+                    } finally {
+                        image.close()
+                    }
+                }
+            }, handler)
             reader = imageReader
 
             onProgress("Camera ${info.id}: opening")
@@ -69,8 +103,8 @@ object ExposureProbe {
             val steps = mutableListOf<ExposureStep>()
             var isoApplied: Int? = null
 
-            for (ns in LADDER_NS) {
-                onProgress("Camera ${info.id}: requesting ${formatExposure(ns)}")
+            for (ns in depth.ladderNs) {
+                onProgress("Camera ${info.id}: exposing ${formatExposure(ns)}")
                 val request = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(imageReader.surface)
                     set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
@@ -80,11 +114,23 @@ object ExposureProbe {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                     set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
                 }.build()
-                val result = captureOnce(sess, request, handler, ns / 1_000_000L + 6_000L)
+
+                val before = frameCount.get()
+                val result = captureOnce(sess, request, handler, ns / 1_000_000L + 8_000L)
                 val applied = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 isoApplied = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: isoApplied
                 val honored = applied != null && abs(applied - ns) <= ns * 0.15
-                steps += ExposureStep(ns, applied, honored)
+
+                var luma: Double? = null
+                if (result != null) {
+                    var waited = 0
+                    while (frameCount.get() == before && waited < 3_000) {
+                        delay(50)
+                        waited += 50
+                    }
+                    if (frameCount.get() > before) luma = lumaX100.get() / 100.0
+                }
+                steps += ExposureStep(ns, applied, honored, luma)
                 if (!honored) break
             }
 
@@ -106,6 +152,26 @@ object ExposureProbe {
 
     private fun failed(id: String, message: String) =
         ProbeResult(id, emptyList(), null, null, null, message)
+
+    /** Average brightness of the Y plane, sampled sparsely. 0 to 255. */
+    private fun meanLuma(image: Image): Double? {
+        val plane = image.planes.firstOrNull() ?: return null
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        var sum = 0L
+        var count = 0
+        for (y in 0 until image.height step 8) {
+            for (x in 0 until image.width step 8) {
+                val index = y * rowStride + x * pixelStride
+                if (index < buffer.limit()) {
+                    sum += buffer.get(index).toInt() and 0xFF
+                    count++
+                }
+            }
+        }
+        return if (count == 0) null else sum.toDouble() / count
+    }
 
     @SuppressLint("MissingPermission")
     private suspend fun openCamera(manager: CameraManager, id: String, handler: Handler): CameraDevice =

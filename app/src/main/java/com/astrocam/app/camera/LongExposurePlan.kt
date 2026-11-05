@@ -1,10 +1,16 @@
 package com.astrocam.app.camera
 
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.sqrt
 
-data class ExposureStep(val requestedNs: Long, val appliedNs: Long?, val honored: Boolean)
+data class ExposureStep(
+    val requestedNs: Long,
+    val appliedNs: Long?,
+    val honored: Boolean,
+    val luma: Double? = null,
+)
 
 data class ProbeResult(
     val cameraId: String,
@@ -16,10 +22,36 @@ data class ProbeResult(
 )
 
 val ProbeResult.manualHonored: Boolean get() = steps.count { it.honored } >= 2
-val ProbeResult.maxHonoredNs: Long get() = steps.filter { it.honored }.maxOfOrNull { it.requestedNs } ?: 0L
+val ProbeResult.maxHonoredNs: Long
+    get() = steps.filter { it.honored }.maxOfOrNull { it.requestedNs } ?: 0L
+val ProbeResult.hitTestCeiling: Boolean get() = steps.isNotEmpty() && steps.all { it.honored }
+val ProbeResult.firstMissNs: Long? get() = steps.firstOrNull { !it.honored }?.requestedNs
+
+enum class BrightnessStatus { Confirmed, Inconclusive, NoData }
+
+data class BrightnessCheck(val status: BrightnessStatus, val detail: String)
+
+/** Checks that longer exposures really produce brighter frames, not just matching metadata. */
+fun ProbeResult.brightnessCheck(): BrightnessCheck {
+    val lumas = steps.filter { it.honored }.mapNotNull { it.luma }
+    if (lumas.isEmpty()) return BrightnessCheck(BrightnessStatus.NoData, "No frame data was read.")
+    val unsaturated = lumas.filter { it < 245.0 }
+    if (unsaturated.size < 2) {
+        return BrightnessCheck(BrightnessStatus.Inconclusive, "Scene too bright to compare frames. Try a dimmer scene.")
+    }
+    val first = unsaturated.first()
+    val last = unsaturated.last()
+    val range = "%.0f → %.0f".format(Locale.US, first, last)
+    return if (last - first >= 3.0) {
+        BrightnessCheck(BrightnessStatus.Confirmed, "Frames got brighter with longer exposure (luma $range).")
+    } else {
+        BrightnessCheck(BrightnessStatus.Inconclusive, "Frames did not get clearly brighter (luma $range). The scene may be too dark.")
+    }
+}
+
 val ProbeResult.isoHonored: Boolean
     get() = isoRequested != null && isoApplied != null &&
-        kotlin.math.abs(isoApplied - isoRequested) <= isoRequested * 0.1
+        abs(isoApplied - isoRequested) <= isoRequested * 0.1
 
 enum class ExposurePath(val title: String) {
     Hardware("Hardware long exposure works"),
@@ -37,7 +69,12 @@ data class Verdict(
     val rows: List<PlanRow>,
 )
 
-private val TARGETS_SECONDS = listOf(10, 30, 60)
+private val TARGETS_SECONDS = listOf(10, 30, 60, 300)
+
+private fun ceilingNote(r: ProbeResult): String = when {
+    r.hitTestCeiling -> "This was the highest value tested, so the real limit may be higher."
+    else -> r.firstMissNs?.let { "The camera did not honor ${formatExposure(it)}." }.orEmpty()
+}
 
 fun assess(result: ProbeResult): Verdict {
     val boost = result.autoBoostNs
@@ -46,7 +83,7 @@ fun assess(result: ProbeResult): Verdict {
         result.manualHonored && result.maxHonoredNs >= 1_000_000_000L -> Triple(
             ExposurePath.Hardware, result.maxHonoredNs,
             "The camera honored manual exposure up to ${formatExposure(result.maxHonoredNs)}. " +
-                "Longer totals can be reached by stacking frames."
+                "${ceilingNote(result)} Longer totals can be reached by stacking frames."
         )
         result.manualHonored -> Triple(
             ExposurePath.Stacking, result.maxHonoredNs,
@@ -81,8 +118,10 @@ fun probeReport(device: String, results: List<ProbeResult>): String = buildStrin
         appendLine("  ${v.summary}")
         r.steps.forEach { s ->
             val got = s.appliedNs?.let(::formatExposure) ?: "no result"
-            appendLine("  Requested ${formatExposure(s.requestedNs)} -> got $got ${if (s.honored) "OK" else "NOT HONORED"}")
+            val luma = s.luma?.let { " luma %.0f".format(Locale.US, it) } ?: ""
+            appendLine("  Requested ${formatExposure(s.requestedNs)} -> got $got ${if (s.honored) "OK" else "NOT HONORED"}$luma")
         }
+        if (r.manualHonored) appendLine("  Brightness check: ${r.brightnessCheck().status} - ${r.brightnessCheck().detail}")
         if (r.isoRequested != null) {
             appendLine("  ISO requested ${r.isoRequested} -> got ${r.isoApplied ?: "n/a"}")
         }

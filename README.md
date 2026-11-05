@@ -10,7 +10,7 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.2.0 covers **Stage 1: capability detection** plus a **long exposure probe**.
+Version 0.3.0 covers **Stage 1: capability detection** plus an experimental **long exposure probe**.
 
 | Stage | Scope | State |
 |-------|-------|-------|
@@ -28,7 +28,8 @@ Version 0.2.0 covers **Stage 1: capability detection** plus a **long exposure pr
 - Detects every camera on the device, including logical and physical lenses
 - Reports exposure range, ISO range, manual and infinity focus, RAW/DNG, sensor size, output formats and hardware level
 - Readiness summary on the home screen
-- Long Exposure Test: requests real manual exposures, reads back what the camera used, and shows whether hardware or software (stacking) long exposure is possible
+- Settings → Experimental → Long Exposure Test: requests real manual exposures from 1/100 s up to 5 minutes, confirms frames get brighter, and shows whether hardware or software (stacking) long exposure is possible
+- Tested exposure limit saved and shown on the home screen
 - Shareable plain-text reports
 - Dark interface with a red night-vision mode
 - Fully offline. The camera permission is requested only when you run the Long Exposure Test
@@ -75,7 +76,7 @@ Without these secrets the release APK is built unsigned. Never commit the keysto
 ```
 app/src/main/java/com/astrocam/app/
 ├── MainActivity.kt        Entry point and navigation
-├── camera/                Camera2 detection and report logic
+├── camera/                Camera2 detection, exposure probe and reports
 └── ui/                    Compose screens and theme
 ```
 

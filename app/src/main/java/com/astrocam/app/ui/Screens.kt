@@ -37,69 +37,6 @@ import com.astrocam.app.camera.deviceName
 import com.astrocam.app.camera.formatExposure
 import com.astrocam.app.camera.rows
 
-@Composable
-fun HomeScreen(
-    cameras: List<CameraInfo>,
-    night: NightTheme,
-    onNightChange: (Boolean) -> Unit,
-    onOpenTester: () -> Unit,
-    onOpenProbe: () -> Unit,
-) {
-    val readiness = remember(cameras) { assessReadiness(cameras) }
-    val back = remember(cameras) { cameras.filter { it.facing == "Back" } }
-    val colors = MaterialTheme.colorScheme
-
-    Scaffold(containerColor = colors.background) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text("Astro Camera", style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold)
-            Text(
-                "Understand your camera. Unlock its capabilities. Capture the night sky.",
-                color = colors.onSurfaceVariant,
-            )
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = colors.surface),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(readiness.title, style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold)
-                    Text(readiness.detail, color = colors.onSurfaceVariant)
-                    if (back.isNotEmpty()) {
-                        val maxExposure = back.mapNotNull { it.exposureRangeNs?.endInclusive }.maxOrNull()
-                        val maxIso = back.mapNotNull { it.isoRange?.endInclusive }.maxOrNull()
-                        Text("Longest exposure: ${maxExposure?.let(::formatExposure) ?: "n/a"}")
-                        Text("Max ISO: ${maxIso ?: "n/a"}")
-                        Text("RAW / DNG: ${if (back.any { it.raw }) "Yes" else "No"}")
-                    }
-                }
-            }
-
-            Button(onClick = onOpenTester, modifier = Modifier.fillMaxWidth()) {
-                Text("Camera Tester")
-            }
-            Button(onClick = onOpenProbe, modifier = Modifier.fillMaxWidth()) {
-                Text("Long Exposure Test")
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Red night-vision mode", modifier = Modifier.weight(1f))
-                Switch(checked = night == NightTheme.Red, onCheckedChange = onNightChange)
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TesterScreen(cameras: List<CameraInfo>, onBack: () -> Unit) {

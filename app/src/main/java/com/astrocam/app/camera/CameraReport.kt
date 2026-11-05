@@ -12,7 +12,7 @@ enum class Readiness(val title: String, val detail: String) {
     Limited(
         "Limited manual control",
         "Rear camera found, but it does not report manual sensor control. " +
-            "Run the Long Exposure Test to check whether it honors manual settings anyway."
+            "Run the Long Exposure Test (Settings, Experimental) to check whether it honors manual settings anyway."
     ),
     Unavailable(
         "No rear camera detected",
