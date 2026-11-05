@@ -10,14 +10,14 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.6.0 covers **Stages 1 and 2**: capability detection, an experimental **long exposure probe**, and a live preview with manual controls.
+Version 0.7.0 covers **Stages 1 to 3**: capability detection, an experimental **long exposure probe**, a live preview with manual controls, and single-frame capture with a self-timer.
 
 | Stage | Scope | State |
 |-------|-------|-------|
 | 1 | Capability detection and compatibility report | Done |
 | 1.5 | Long exposure probe and software exposure plan | Done |
 | 2 | Camera preview and manual controls | Done |
-| 3 | Astrophotography capture mode | Planned |
+| 3 | Astrophotography capture mode (single frame, self-timer) | Done |
 | 4 | Multi-frame capture | Planned |
 | 5 | Image stacking | Planned |
 | 6 | Gallery and processing | Planned |
@@ -25,6 +25,7 @@ Version 0.6.0 covers **Stages 1 and 2**: capability detection, an experimental *
 
 ## Features
 
+- Capture button with self-timer; photos saved to Pictures/AstroCamera with their settings logged
 - Live preview with manual exposure, ISO and focus, limited to what the phone really does
 - Detects every camera on the device, including logical and physical lenses
 - Reports exposure range, ISO range, manual and infinity focus, RAW/DNG, sensor size, output formats and hardware level

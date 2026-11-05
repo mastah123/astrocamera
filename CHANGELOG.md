@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-05
+
+### Added
+- Capture button with a self-timer (off, 2, 5 or 10 seconds) and an on-screen countdown; tap the shutter during the countdown to cancel.
+- Photos are saved as JPEG to Pictures/AstroCamera with the settings in the file name.
+- Private capture log (captures.jsonl) recording the requested and camera-reported exposure, ISO and focus for every photo.
+- Fallback to a preview-only session when a camera cannot run preview and photo streams together.
+
+### Changed
+- Exposure, ISO and focus controls now sit over the lower edge of the preview. Tap a value to bring up its slider, so nothing needs scrolling.
+- Shutter, timer and Manual/Auto switch sit under the preview.
+
 ## [0.6.1] - 2026-11-05
 
 ### Fixed

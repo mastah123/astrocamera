@@ -2,21 +2,28 @@ package com.astrocam.app.camera
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.resume
 import kotlin.math.abs
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class ManualSettings(
     val manual: Boolean,
@@ -25,12 +32,19 @@ data class ManualSettings(
     val focusDiopters: Float,
 )
 
-/** What the camera says it used for the latest preview frame. */
+/** What the camera says it used for a frame. */
 data class LiveReading(val exposureNs: Long?, val iso: Int?, val frameNs: Long?)
 
-data class PreviewConfig(val size: Size, val aspect: Float)
+class CaptureOutcome(val jpeg: ByteArray, val reading: LiveReading)
 
-/** Picks a preview size matching the sensor shape, and the portrait aspect ratio to show it at. */
+data class PreviewConfig(
+    val size: Size,
+    val aspect: Float,
+    val sensorOrientation: Int,
+    val jpegSize: Size?,
+)
+
+/** Picks a preview size matching the sensor shape, the portrait aspect to show it at, and the photo size. */
 fun previewConfig(context: Context, cameraId: String): PreviewConfig? {
     val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     val c = runCatching { manager.getCameraCharacteristics(cameraId) }.getOrNull() ?: return null
@@ -44,10 +58,31 @@ fun previewConfig(context: Context, cameraId: String): PreviewConfig? {
     val orientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
     val aspect = if (orientation % 180 == 90) size.height.toFloat() / size.width
     else size.width.toFloat() / size.height
-    return PreviewConfig(size, aspect)
+    val jpeg = map.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
+    return PreviewConfig(size, aspect, orientation, jpeg)
 }
 
-/** Runs a live Camera2 preview and applies manual settings as they change. */
+private fun CaptureRequest.Builder.applyControls(s: ManualSettings) {
+    if (s.manual) {
+        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+        set(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
+        set(CaptureRequest.SENSOR_SENSITIVITY, s.iso)
+        set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(s.exposureNs, 33_333_333L))
+        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+        set(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopters)
+    } else {
+        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+    }
+}
+
+private fun TotalCaptureResult.toReading() = LiveReading(
+    get(CaptureResult.SENSOR_EXPOSURE_TIME),
+    get(CaptureResult.SENSOR_SENSITIVITY),
+    get(CaptureResult.SENSOR_FRAME_DURATION),
+)
+
+/** Runs a live Camera2 preview, applies manual settings as they change, and takes photos. */
 class PreviewController(
     private val context: Context,
     private val onReading: (LiveReading) -> Unit,
@@ -57,8 +92,14 @@ class PreviewController(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var surface: Surface? = null
+    private var jpegReader: ImageReader? = null
     private var latest: ManualSettings? = null
     private var lastReadingAt = 0L
+
+    @Volatile
+    private var pendingJpeg: CompletableDeferred<ByteArray>? = null
+
+    val canCapture: Boolean get() = jpegReader != null && session != null
 
     private val callback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
@@ -67,19 +108,19 @@ class PreviewController(
             val now = SystemClock.elapsedRealtime()
             if (now - lastReadingAt < 500) return
             lastReadingAt = now
-            onReading(
-                LiveReading(
-                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
-                    result.get(CaptureResult.SENSOR_SENSITIVITY),
-                    result.get(CaptureResult.SENSOR_FRAME_DURATION),
-                )
-            )
+            onReading(result.toReading())
         }
     }
 
     /** Returns an error message, or null when the preview is running. */
     @SuppressLint("MissingPermission")
-    suspend fun start(cameraId: String, texture: SurfaceTexture, size: Size, settings: ManualSettings): String? {
+    suspend fun start(
+        cameraId: String,
+        texture: SurfaceTexture,
+        previewSize: Size,
+        jpegSize: Size?,
+        settings: ManualSettings,
+    ): String? {
         stop()
         latest = latest ?: settings
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -88,12 +129,27 @@ class PreviewController(
         thread = t
         handler = h
         return try {
-            texture.setDefaultBufferSize(size.width, size.height)
-            val s = Surface(texture)
-            surface = s
+            texture.setDefaultBufferSize(previewSize.width, previewSize.height)
+            val previewSurface = Surface(texture)
+            surface = previewSurface
             val dev = ExposureProbe.openCamera(manager, cameraId, h)
             device = dev
-            session = ExposureProbe.createSession(dev, s, h)
+
+            val reader = jpegSize?.let { size ->
+                ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2).also { r ->
+                    r.setOnImageAvailableListener({ deliverJpeg(it) }, h)
+                }
+            }
+            session = try {
+                ExposureProbe.createSession(dev, listOfNotNull(previewSurface, reader?.surface), h)
+                    .also { jpegReader = reader }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Some cameras cannot run a preview and a full-size photo stream together.
+                runCatching { reader?.close() }
+                ExposureProbe.createSession(dev, listOf(previewSurface), h)
+            }
             apply()
             null
         } catch (e: CancellationException) {
@@ -110,6 +166,60 @@ class PreviewController(
         apply()
     }
 
+    private fun deliverJpeg(reader: ImageReader) {
+        val image = reader.acquireNextImage() ?: return
+        try {
+            val buffer = image.planes[0].buffer
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            pendingJpeg?.complete(bytes)
+        } finally {
+            image.close()
+        }
+    }
+
+    /** Takes one photo with the given settings. Returns null if it failed. */
+    suspend fun capture(settings: ManualSettings, sensorOrientation: Int): CaptureOutcome? {
+        val dev = device ?: return null
+        val sess = session ?: return null
+        val reader = jpegReader ?: return null
+        val h = handler ?: return null
+        val deferred = CompletableDeferred<ByteArray>()
+        pendingJpeg = deferred
+        try {
+            val request = dev.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(reader.surface)
+                applyControls(settings)
+                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                set(CaptureRequest.JPEG_QUALITY, 95.toByte())
+            }.build()
+            val timeoutMs = settings.exposureNs / 1_000_000L + 10_000L
+            val result = withTimeoutOrNull(timeoutMs) {
+                suspendCancellableCoroutine<TotalCaptureResult?> { cont ->
+                    sess.capture(request, object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult,
+                        ) {
+                            if (cont.isActive) cont.resume(result)
+                        }
+                        override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    }, h)
+                }
+            }
+            val bytes = withTimeoutOrNull(5_000L) { deferred.await() }
+            if (result == null || bytes == null || bytes.isEmpty()) return null
+            return CaptureOutcome(bytes, result.toReading())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        } finally {
+            pendingJpeg = null
+        }
+    }
+
     private fun apply() {
         val s = latest ?: return
         val dev = device ?: return
@@ -119,17 +229,7 @@ class PreviewController(
         try {
             val builder = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surf)
-            if (s.manual) {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, s.iso)
-                builder.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(s.exposureNs, 33_333_333L))
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopters)
-            } else {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            }
+            builder.applyControls(s)
             sess.setRepeatingRequest(builder.build(), callback, h)
         } catch (e: Exception) {
             // The session may be closing; the next start() rebuilds it.
@@ -137,13 +237,16 @@ class PreviewController(
     }
 
     fun stop() {
+        pendingJpeg?.complete(ByteArray(0))
         runCatching { session?.stopRepeating() }
         runCatching { session?.close() }
         runCatching { device?.close() }
+        runCatching { jpegReader?.close() }
         runCatching { surface?.release() }
         thread?.quitSafely()
         session = null
         device = null
+        jpegReader = null
         surface = null
         thread = null
         handler = null

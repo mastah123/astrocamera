@@ -108,7 +108,7 @@ object ExposureProbe {
             onProgress("Camera ${info.id}: opening")
             val cam = openCamera(manager, info.id, handler)
             device = cam
-            val sess = createSession(cam, imageReader.surface, handler)
+            val sess = createSession(cam, listOf(imageReader.surface), handler)
             session = sess
 
             val iso = TEST_ISO.coerceIn(info.isoRange?.start ?: TEST_ISO, info.isoRange?.endInclusive ?: TEST_ISO)
@@ -300,11 +300,11 @@ object ExposureProbe {
             }, handler)
         }
 
-    internal suspend fun createSession(device: CameraDevice, surface: Surface, handler: Handler): CameraCaptureSession =
+    internal suspend fun createSession(device: CameraDevice, surfaces: List<Surface>, handler: Handler): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             val config = SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
-                listOf(OutputConfiguration(surface)),
+                surfaces.map { OutputConfiguration(it) },
                 Executor { task -> handler.post(task) },
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
