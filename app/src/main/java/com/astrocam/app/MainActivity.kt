@@ -16,9 +16,10 @@ import com.astrocam.app.camera.CameraDetector
 import com.astrocam.app.ui.AstroTheme
 import com.astrocam.app.ui.HomeScreen
 import com.astrocam.app.ui.NightTheme
+import com.astrocam.app.ui.ProbeScreen
 import com.astrocam.app.ui.TesterScreen
 
-private enum class Screen { Home, Tester }
+private enum class Screen { Home, Tester, Probe }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,8 +44,10 @@ private fun AstroApp() {
                 night = night,
                 onNightChange = { night = if (it) NightTheme.Red else NightTheme.Dark },
                 onOpenTester = { screen = Screen.Tester },
+                onOpenProbe = { screen = Screen.Probe },
             )
             Screen.Tester -> TesterScreen(cameras = cameras, onBack = { screen = Screen.Home })
+            Screen.Probe -> ProbeScreen(cameras = cameras, onBack = { screen = Screen.Home })
         }
     }
 }

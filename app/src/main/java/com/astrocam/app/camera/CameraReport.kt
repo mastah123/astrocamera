@@ -12,7 +12,7 @@ enum class Readiness(val title: String, val detail: String) {
     Limited(
         "Limited manual control",
         "Rear camera found, but it does not report manual sensor control. " +
-            "Long exposures and manual ISO may be unavailable."
+            "Run the Long Exposure Test to check whether it honors manual settings anyway."
     ),
     Unavailable(
         "No rear camera detected",
@@ -53,8 +53,9 @@ fun CameraInfo.rows(): List<Pair<String, String>> = listOf(
         .ifEmpty { "Unknown" },
     "Exposure time" to (exposureRangeNs?.let {
         "${formatExposure(it.start)} – ${formatExposure(it.endInclusive)}"
-    } ?: "Not adjustable"),
-    "ISO" to (isoRange?.let { "${it.start} – ${it.endInclusive}" } ?: "Not adjustable"),
+    }?.let { if (manualSensor) it else "$it (reported only)" } ?: "Not adjustable"),
+    "ISO" to (isoRange?.let { "${it.start} – ${it.endInclusive}" }
+        ?.let { if (manualSensor) it else "$it (reported only)" } ?: "Not adjustable"),
     "Manual sensor control" to yesNo(manualSensor),
     "Manual focus" to when {
         manualFocus -> "Yes (closest focus %.1f cm)".format(Locale.US, 100f / minFocusDiopters)
@@ -70,7 +71,11 @@ fun CameraInfo.rows(): List<Pair<String, String>> = listOf(
     "Exposure compensation" to (aeCompRangeEv?.let {
         "%+.1f to %+.1f EV".format(Locale.US, it.start, it.endInclusive)
     } ?: "Not supported"),
-    "RAW / DNG" to yesNo(raw),
+    "RAW / DNG" to when {
+        raw -> "Yes"
+        formats.any { it.startsWith("RAW_SENSOR") } -> "Unconfirmed (format listed, not advertised)"
+        else -> "No"
+    },
     "Output formats" to formats.joinToString().ifEmpty { "Unknown" },
     "Logical multi-camera" to if (physicalIds.isEmpty()) "No"
     else "Yes (physical IDs: ${physicalIds.joinToString()})",

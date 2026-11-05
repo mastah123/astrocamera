@@ -10,11 +10,12 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.1.0 covers **Stage 1: camera capability detection**.
+Version 0.2.0 covers **Stage 1: capability detection** plus a **long exposure probe**.
 
 | Stage | Scope | State |
 |-------|-------|-------|
 | 1 | Capability detection and compatibility report | Done |
+| 1.5 | Long exposure probe and software exposure plan | Done |
 | 2 | Camera preview and manual controls | Planned |
 | 3 | Astrophotography capture mode | Planned |
 | 4 | Multi-frame capture | Planned |
@@ -27,9 +28,10 @@ Version 0.1.0 covers **Stage 1: camera capability detection**.
 - Detects every camera on the device, including logical and physical lenses
 - Reports exposure range, ISO range, manual and infinity focus, RAW/DNG, sensor size, output formats and hardware level
 - Readiness summary on the home screen
-- Shareable plain-text compatibility report
+- Long Exposure Test: requests real manual exposures, reads back what the camera used, and shows whether hardware or software (stacking) long exposure is possible
+- Shareable plain-text reports
 - Dark interface with a red night-vision mode
-- Fully offline, no permissions required at this stage
+- Fully offline. The camera permission is requested only when you run the Long Exposure Test
 
 ## Requirements
 

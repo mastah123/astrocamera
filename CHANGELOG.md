@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
+### Added
+- Long Exposure Test that sends real manual exposure and ISO requests and compares them with the camera's capture results.
+- Auto night-boost test (maximum exposure compensation, lowest frame rate).
+- Software long exposure plan: frames needed for 10, 30 and 60 second totals and the expected noise improvement.
+- Shareable long exposure report.
+- Camera permission, requested only when the test is run.
+
+### Changed
+- Compatibility report marks exposure and ISO ranges as "reported only" when manual sensor control is not advertised.
+- Compatibility report flags RAW as unconfirmed when the format is listed but the capability is not advertised.
+
 ## [0.1.0] - 2026-11-05
 
 ### Added

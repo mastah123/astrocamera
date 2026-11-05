@@ -43,6 +43,7 @@ fun HomeScreen(
     night: NightTheme,
     onNightChange: (Boolean) -> Unit,
     onOpenTester: () -> Unit,
+    onOpenProbe: () -> Unit,
 ) {
     val readiness = remember(cameras) { assessReadiness(cameras) }
     val back = remember(cameras) { cameras.filter { it.facing == "Back" } }
@@ -83,6 +84,9 @@ fun HomeScreen(
 
             Button(onClick = onOpenTester, modifier = Modifier.fillMaxWidth()) {
                 Text("Camera Tester")
+            }
+            Button(onClick = onOpenProbe, modifier = Modifier.fillMaxWidth()) {
+                Text("Long Exposure Test")
             }
 
             Row(
@@ -160,7 +164,7 @@ private fun CameraCard(info: CameraInfo) {
     }
 }
 
-private fun shareReport(context: Context, text: String) {
+internal fun shareReport(context: Context, text: String) {
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, text)
