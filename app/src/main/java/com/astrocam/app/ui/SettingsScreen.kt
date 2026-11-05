@@ -41,6 +41,7 @@ fun SettingsScreen(
     profile: DeviceProfile,
     onResetProfile: () -> Unit,
     onOpenProbe: () -> Unit,
+    onOpenRaw: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -87,6 +88,7 @@ fun SettingsScreen(
                             modifier = Modifier.padding(top = 6.dp))
                         Text("Reported exposure: ${c.reportedMaxExposureNs?.let(::formatExposure) ?: "n/a"}")
                         Text("Verified exposure: ${c.verified?.describe() ?: "not tested"}")
+                        Text("RAW capture: ${when (c.rawVerified) { true -> "passed"; false -> "failed"; null -> "not tested" }}")
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -119,6 +121,9 @@ fun SettingsScreen(
                     )
                     OutlinedButton(onClick = onOpenProbe, modifier = Modifier.fillMaxWidth()) {
                         Text("Long Exposure Test")
+                    }
+                    OutlinedButton(onClick = onOpenRaw, modifier = Modifier.fillMaxWidth()) {
+                        Text("RAW Capture Test")
                     }
                 }
             }

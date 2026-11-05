@@ -23,10 +23,11 @@ import com.astrocam.app.ui.AstroTheme
 import com.astrocam.app.ui.HomeScreen
 import com.astrocam.app.ui.NightTheme
 import com.astrocam.app.ui.ProbeScreen
+import com.astrocam.app.ui.RawScreen
 import com.astrocam.app.ui.SettingsScreen
 import com.astrocam.app.ui.TesterScreen
 
-private enum class Screen { Home, Astro, Tester, Settings, Probe }
+private enum class Screen { Home, Astro, Tester, Settings, Probe, Raw }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,8 +42,9 @@ private fun AstroApp() {
     val context = LocalContext.current
     val cameras = remember { CameraDetector.detect(context) }
     var limits by remember { mutableStateOf(ProfileStore.load(context)) }
-    val profile = remember(cameras, limits) {
-        buildProfile(deviceName(), appVersion(context), cameras, limits)
+    var rawResults by remember { mutableStateOf(ProfileStore.loadRaw(context)) }
+    val profile = remember(cameras, limits, rawResults) {
+        buildProfile(deviceName(), appVersion(context), cameras, limits, rawResults)
     }
     val limitsForControls = remember(cameras, profile) { controlLimits(cameras, profile) }
     var night by rememberSaveable { mutableStateOf(NightTheme.Dark) }
@@ -50,7 +52,7 @@ private fun AstroApp() {
 
     AstroTheme(night) {
         BackHandler(enabled = screen != Screen.Home) {
-            screen = if (screen == Screen.Probe) Screen.Settings else Screen.Home
+            screen = if (screen == Screen.Probe || screen == Screen.Raw) Screen.Settings else Screen.Home
         }
         when (screen) {
             Screen.Home -> HomeScreen(
@@ -61,19 +63,28 @@ private fun AstroApp() {
                 onOpenSettings = { screen = Screen.Settings },
             )
             Screen.Astro -> AstroScreen(limits = limitsForControls, onBack = { screen = Screen.Home })
-            Screen.Tester -> TesterScreen(cameras = cameras, limits = limits, onBack = { screen = Screen.Home })
+            Screen.Tester -> TesterScreen(cameras = cameras, profile = profile, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(
                 night = night,
                 onNightChange = { night = if (it) NightTheme.Red else NightTheme.Dark },
                 profile = profile,
-                onResetProfile = { limits = ProfileStore.reset(context) },
+                onResetProfile = {
+                    limits = ProfileStore.reset(context)
+                    rawResults = emptyMap()
+                },
                 onOpenProbe = { screen = Screen.Probe },
+                onOpenRaw = { screen = Screen.Raw },
                 onBack = { screen = Screen.Home },
             )
             Screen.Probe -> ProbeScreen(
                 cameras = cameras,
                 onBack = { screen = Screen.Settings },
                 onSaved = { limits = it },
+            )
+            Screen.Raw -> RawScreen(
+                cameras = cameras,
+                onBack = { screen = Screen.Settings },
+                onSaved = { rawResults = it },
             )
         }
     }

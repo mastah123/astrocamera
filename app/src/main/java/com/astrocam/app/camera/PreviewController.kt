@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
@@ -95,6 +96,9 @@ class PreviewController(
     private var jpegReader: ImageReader? = null
     private var latest: ManualSettings? = null
     private var lastReadingAt = 0L
+    private var noiseMode: Int? = null
+    private var edgeMode: Int? = null
+    private var awbLockAvailable = false
 
     @Volatile
     private var pendingJpeg: CompletableDeferred<ByteArray>? = null
@@ -124,6 +128,18 @@ class PreviewController(
         stop()
         latest = latest ?: settings
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        runCatching {
+            val chars = manager.getCameraCharacteristics(cameraId)
+            val nr = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.toSet().orEmpty()
+            noiseMode = when {
+                CameraMetadata.NOISE_REDUCTION_MODE_OFF in nr -> CameraMetadata.NOISE_REDUCTION_MODE_OFF
+                CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL in nr -> CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
+                else -> null
+            }
+            val edge = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)?.toSet().orEmpty()
+            edgeMode = if (CameraMetadata.EDGE_MODE_OFF in edge) CameraMetadata.EDGE_MODE_OFF else null
+            awbLockAvailable = chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
+        }
         val t = HandlerThread("astro-preview").also { it.start() }
         val h = Handler(t.looper)
         thread = t
@@ -178,8 +194,8 @@ class PreviewController(
         }
     }
 
-    /** Takes one photo with the given settings. Returns null if it failed. */
-    suspend fun capture(settings: ManualSettings, sensorOrientation: Int): CaptureOutcome? {
+    /** Takes one photo with the given settings. Returns null if it failed. Minimal mode reduces processing. */
+    suspend fun capture(settings: ManualSettings, sensorOrientation: Int, minimal: Boolean = false): CaptureOutcome? {
         val dev = device ?: return null
         val sess = session ?: return null
         val reader = jpegReader ?: return null
@@ -192,6 +208,12 @@ class PreviewController(
                 applyControls(settings)
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                 set(CaptureRequest.JPEG_QUALITY, 95.toByte())
+                if (minimal) {
+                    // Less processing keeps frames consistent and easier to stack.
+                    noiseMode?.let { set(CaptureRequest.NOISE_REDUCTION_MODE, it) }
+                    edgeMode?.let { set(CaptureRequest.EDGE_MODE, it) }
+                    if (awbLockAvailable) set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
             }.build()
             val timeoutMs = settings.exposureNs / 1_000_000L + 10_000L
             val result = withTimeoutOrNull(timeoutMs) {

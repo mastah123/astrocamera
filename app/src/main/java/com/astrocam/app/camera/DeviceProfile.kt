@@ -17,6 +17,13 @@ data class VerifiedLimit(val maxNs: Long, val mode: String, val verification: Ve
 fun VerifiedLimit.describe(): String =
     "up to ${formatExposure(maxNs)} ($mode mode, ${verification.label})"
 
+fun rawRow(ok: Boolean?): Pair<String, String> =
+    "RAW capture test" to when (ok) {
+        true -> "Passed"
+        false -> "Failed"
+        null -> "Not tested"
+    }
+
 fun verifiedRow(limit: VerifiedLimit?): Pair<String, String> =
     "Verified exposure" to (limit?.describe() ?: "Not tested")
 
@@ -37,6 +44,7 @@ data class CameraProfile(
     val manualFocusReported: Boolean,
     val extensions: List<String>,
     val verified: VerifiedLimit?,
+    val rawVerified: Boolean? = null,
 )
 
 data class DeviceProfile(
@@ -50,6 +58,7 @@ fun buildProfile(
     appVersion: String,
     cameras: List<CameraInfo>,
     limits: Map<String, VerifiedLimit>,
+    rawResults: Map<String, Boolean> = emptyMap(),
 ) = DeviceProfile(
     device, appVersion,
     cameras.map { c ->
@@ -63,6 +72,7 @@ fun buildProfile(
             manualFocusReported = c.manualFocus,
             extensions = c.extensions,
             verified = limits[c.id],
+            rawVerified = rawResults[c.id],
         )
     },
 )
@@ -89,6 +99,7 @@ fun DeviceProfile.toJson(): String = JSONObject().apply {
                 put("verifiedMaxExposureNs", c.verified?.maxNs ?: JSONObject.NULL)
                 put("verifiedMode", c.verified?.mode ?: JSONObject.NULL)
                 put("verifiedBy", c.verified?.verification?.name ?: JSONObject.NULL)
+                put("rawCaptureVerified", c.rawVerified ?: JSONObject.NULL)
             })
         }
     })
@@ -130,8 +141,28 @@ object ProfileStore {
         return limits
     }
 
+    private const val KEY_RAW = "raw_results"
+
+    fun loadRaw(context: Context): Map<String, Boolean> {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RAW, null)
+            ?: return emptyMap()
+        return runCatching {
+            val obj = JSONObject(raw)
+            obj.keys().asSequence().associateWith { obj.getBoolean(it) }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun saveRaw(context: Context, cameraId: String, ok: Boolean): Map<String, Boolean> {
+        val map = loadRaw(context).toMutableMap()
+        map[cameraId] = ok
+        val obj = JSONObject()
+        map.forEach { (id, value) -> obj.put(id, value) }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_RAW, obj.toString()).apply()
+        return map
+    }
+
     fun reset(context: Context): Map<String, VerifiedLimit> {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).remove(KEY_RAW).apply()
         return emptyMap()
     }
 

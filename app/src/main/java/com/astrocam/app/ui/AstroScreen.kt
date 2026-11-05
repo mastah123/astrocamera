@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -63,15 +64,23 @@ import com.astrocam.app.camera.isoAt
 import com.astrocam.app.camera.isoFraction
 import com.astrocam.app.camera.previewConfig
 import java.util.Locale
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private enum class Control { Exposure, Iso, Focus }
 
 private val TIMER_CHOICES = listOf(0, 2, 5, 10)
+private val FRAME_CHOICES = listOf(1, 5, 10, 20, 50, 100)
+
+private fun formatTotal(ns: Long): String {
+    val seconds = ns / 1e9
+    return if (seconds < 60) "%.1f s".format(Locale.US, seconds) else "%.1f min".format(Locale.US, seconds / 60)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,6 +145,9 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var frameCount by remember { mutableStateOf(1) }
+    var frameIndex by remember { mutableStateOf(0) }
+    var savedCount by remember { mutableStateOf(0) }
 
     val settings = ManualSettings(
         manual = manual && limits.manualAvailable,
@@ -179,6 +191,8 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
         job = scope.launch {
             busy = true
             status = null
+            savedCount = 0
+            frameIndex = 0
             try {
                 var remaining = timerSeconds
                 while (remaining > 0) {
@@ -187,15 +201,44 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
                     remaining--
                 }
                 countdown = 0
+
+                // Every frame uses the same settings, taken when the sequence starts.
                 val used = latestSettings
-                val outcome = controller.capture(used, cfg.sensorOrientation)
-                status = if (outcome == null) {
-                    "Capture failed. Try again."
-                } else {
-                    val name = withContext(Dispatchers.IO) {
-                        CaptureStore.save(context, outcome.jpeg, used, outcome.reading, cameraId)
+                val total = frameCount
+                val session = if (total > 1) CaptureStore.newSession() else null
+                val minimal = total > 1 && used.manual
+                val pending = ArrayDeque<Deferred<String?>>()
+                var lastName: String? = null
+                var failures = 0
+
+                suspend fun reap() {
+                    val name = pending.removeFirst().await()
+                    if (name != null) {
+                        savedCount++
+                        lastName = name
                     }
-                    if (name != null) "Saved $name" else "Could not save the photo."
+                }
+
+                for (i in 1..total) {
+                    frameIndex = i
+                    val outcome = controller.capture(used, cfg.sensorOrientation, minimal)
+                    if (outcome == null) {
+                        failures++
+                        if (failures >= 3) break
+                        continue
+                    }
+                    // Save in the background while the next frame is being captured.
+                    pending.addLast(scope.async(Dispatchers.IO) {
+                        CaptureStore.save(context, outcome.jpeg, used, outcome.reading, cameraId, session, i, total)
+                    })
+                    if (pending.size >= 3) reap()
+                }
+                while (pending.isNotEmpty()) reap()
+
+                status = when {
+                    total == 1 -> lastName?.let { "Saved $it" } ?: "Capture failed. Try again."
+                    failures >= 3 -> "Stopped after repeated failures. Saved $savedCount frames."
+                    else -> "Saved $savedCount of $total frames to Pictures/AstroCamera/$session"
                 }
             } finally {
                 busy = false
@@ -261,23 +304,35 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
             verticalArrangement = Arrangement.SpaceEvenly,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            val info = buildString {
+                reading?.let {
+                    append("Camera: ${it.exposureNs?.let(::formatExposure) ?: "n/a"} · ISO ${it.iso ?: "n/a"}")
+                }
+                if (frameCount > 1 && settings.manual) {
+                    if (isNotEmpty()) append(" · ")
+                    append("$frameCount × ${formatExposure(settings.exposureNs)} = ${formatTotal(settings.exposureNs * frameCount)}")
+                }
+            }
             when {
                 !hasPermission -> {
                     Text("Camera permission is needed for the preview.")
                     Button(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("Grant access") }
                 }
                 error != null -> Text("Preview failed: $error", color = colors.error, textAlign = TextAlign.Center)
-                else -> {
-                    Text(
-                        status ?: reading?.let {
-                            "Camera: ${it.exposureNs?.let(::formatExposure) ?: "n/a"} · " +
-                                "ISO ${it.iso ?: "n/a"} · frame ${it.frameNs?.let(::formatExposure) ?: "n/a"}"
-                        } ?: "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
+                busy && frameCount > 1 && countdown == 0 -> {
+                    Text("Frame $frameIndex of $frameCount · saved $savedCount",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    LinearProgressIndicator(
+                        progress = frameIndex.toFloat() / frameCount,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                else -> Text(
+                    status ?: info,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
             }
 
             Row(
@@ -291,16 +346,11 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
                     enabled = !busy,
                     onClick = { timerSeconds = TIMER_CHOICES[(TIMER_CHOICES.indexOf(timerSeconds) + 1) % TIMER_CHOICES.size] },
                 )
-                Shutter(
-                    enabled = (canCapture && !busy) || countdown > 0,
-                    countdown = countdown,
-                    busy = busy,
-                    onClick = {
-                        when {
-                            countdown > 0 -> { job?.cancel(); status = "Timer cancelled" }
-                            !busy -> shoot()
-                        }
-                    },
+                Chip(
+                    label = if (frameCount == 1) "1 frame" else "$frameCount frames",
+                    selected = frameCount > 1,
+                    enabled = !busy,
+                    onClick = { frameCount = FRAME_CHOICES[(FRAME_CHOICES.indexOf(frameCount) + 1) % FRAME_CHOICES.size] },
                 )
                 Chip(
                     label = if (settings.manual) "Manual" else "Auto",
@@ -309,6 +359,23 @@ private fun AstroContent(limits: ControlLimits, modifier: Modifier) {
                     onClick = { manual = !manual },
                 )
             }
+
+            Shutter(
+                enabled = (canCapture && !busy) || countdown > 0 || (busy && frameCount > 1),
+                label = when {
+                    countdown > 0 -> countdown.toString()
+                    busy && frameCount > 1 -> frameIndex.toString()
+                    busy -> "…"
+                    else -> ""
+                },
+                onClick = {
+                    when {
+                        countdown > 0 -> { job?.cancel(); status = "Timer cancelled" }
+                        busy -> { job?.cancel(); status = "Stopped after $savedCount frames" }
+                        else -> shoot()
+                    }
+                },
+            )
         }
     }
 }
@@ -425,7 +492,7 @@ private fun Chip(label: String, selected: Boolean, enabled: Boolean, onClick: ()
 }
 
 @Composable
-private fun Shutter(enabled: Boolean, countdown: Int, busy: Boolean, onClick: () -> Unit) {
+private fun Shutter(enabled: Boolean, label: String, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Box(
         modifier = Modifier
@@ -439,11 +506,7 @@ private fun Shutter(enabled: Boolean, countdown: Int, busy: Boolean, onClick: ()
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            when {
-                countdown > 0 -> countdown.toString()
-                busy -> "…"
-                else -> ""
-            },
+            label,
             color = colors.background,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-05
+
+### Added
+- Multi-frame capture: choose 1, 5, 10, 20, 50 or 100 frames, all taken with the same settings.
+- Frame counter, progress bar and a stop button during a sequence; the total exposure is shown before you start.
+- Each sequence is saved in its own folder, Pictures/AstroCamera/SESSION_<time>, with numbered frames.
+- Frames are saved in the background while the next one is captured.
+- Minimal processing for multi-frame manual captures (noise reduction and edge enhancement off, white balance locked where the phone allows it) so frames stack more consistently.
+- RAW Capture Test in Settings, Experimental: takes a real RAW photo, checks the pixels, and saves a DNG.
+- RAW capture result stored in the device profile, shown in the Camera Tester, the shared report and the profile JSON.
+- Sequence details (session, frame number, total) in the private capture log.
+
+### Changed
+- Reset limits in Settings also clears the RAW result.
+
 ## [0.7.0] - 2026-11-05
 
 ### Added

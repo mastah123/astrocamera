@@ -89,7 +89,7 @@ fun CameraInfo.rows(): List<Pair<String, String>> = listOf(
 fun buildReport(
     device: String,
     cameras: List<CameraInfo>,
-    limits: Map<String, VerifiedLimit> = emptyMap(),
+    profile: DeviceProfile? = null,
 ): String = buildString {
     appendLine("Astro Camera - Compatibility Report")
     appendLine("Device: $device")
@@ -97,7 +97,8 @@ fun buildReport(
     cameras.forEach { camera ->
         appendLine()
         appendLine("Camera ${camera.id} (${camera.facing})")
-        (camera.rows() + verifiedRow(limits[camera.id])).forEach { (label, value) ->
+        val cp = profile?.cameras?.firstOrNull { it.cameraId == camera.id }
+        (camera.rows() + verifiedRow(cp?.verified) + rawRow(cp?.rawVerified)).forEach { (label, value) ->
             appendLine("  $label: $value")
         }
     }
