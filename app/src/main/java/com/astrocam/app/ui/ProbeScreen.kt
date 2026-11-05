@@ -45,8 +45,8 @@ import com.astrocam.app.camera.ExposureProbe
 import com.astrocam.app.camera.ProbeDepth
 import com.astrocam.app.camera.ProbeResult
 import com.astrocam.app.camera.RequestMode
-import com.astrocam.app.camera.ProbeStore
-import com.astrocam.app.camera.TestedLimit
+import com.astrocam.app.camera.ProfileStore
+import com.astrocam.app.camera.VerifiedLimit
 import com.astrocam.app.camera.assess
 import com.astrocam.app.camera.brightnessCheck
 import com.astrocam.app.camera.deviceName
@@ -65,7 +65,7 @@ private fun formatDuration(seconds: Int): String =
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (TestedLimit) -> Unit) {
+fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (Map<String, VerifiedLimit>) -> Unit) {
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
@@ -96,10 +96,7 @@ fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (TestedL
                         results = collected.toList()
                     }
                     progress = if (collected.isEmpty()) "No rear camera to test." else "Done"
-                    collected.filter { it.manualHonored }.maxByOrNull { it.maxHonoredNs }?.let { best ->
-                        val confirmed = best.brightnessCheck().status == BrightnessStatus.Confirmed
-                        onSaved(ProbeStore.saveIfBetter(context, TestedLimit(best.maxHonoredNs, confirmed)))
-                    }
+                    onSaved(ProfileStore.merge(context, collected))
                 } finally {
                     running = false
                 }

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+
+### Added
+- Verified device profile: each camera keeps its proven long exposure limit, the request mode that proved it, and how it was proven (elapsed time, sensor timestamps, brightness or metadata only).
+- Stronger evidence replaces weaker evidence when merging test results.
+- Device profile card in Settings with Share (JSON) and Reset.
+- Verified exposure row in the Camera Tester and in the compatibility report.
+- Home screen shows the verified or unverified exposure limit and how it was proven.
+
+### Fixed
+- Brightness check missed a false pass when frames got darker at a longer exposure. Any drop of more than 10% now rejects the step.
+- Dark room mode showed "NoData"; it now reads "Skipped".
+
+### Changed
+- Previous saved limits are replaced by the profile. Re-run the test once to fill it.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added

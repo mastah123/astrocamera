@@ -31,6 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.astrocam.app.camera.CameraInfo
+import com.astrocam.app.camera.VerifiedLimit
+import com.astrocam.app.camera.verifiedRow
 import com.astrocam.app.camera.assessReadiness
 import com.astrocam.app.camera.buildReport
 import com.astrocam.app.camera.deviceName
@@ -39,7 +41,7 @@ import com.astrocam.app.camera.rows
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TesterScreen(cameras: List<CameraInfo>, onBack: () -> Unit) {
+fun TesterScreen(cameras: List<CameraInfo>, limits: Map<String, VerifiedLimit>, onBack: () -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
 
@@ -50,7 +52,7 @@ fun TesterScreen(cameras: List<CameraInfo>, onBack: () -> Unit) {
                 title = { Text("Camera Tester") },
                 navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
                 actions = {
-                    TextButton(onClick = { shareReport(context, buildReport(deviceName(), cameras)) }) {
+                    TextButton(onClick = { shareReport(context, buildReport(deviceName(), cameras, limits)) }) {
                         Text("Share")
                     }
                 },
@@ -69,14 +71,14 @@ fun TesterScreen(cameras: List<CameraInfo>, onBack: () -> Unit) {
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(cameras, key = { it.id }) { CameraCard(it) }
+                items(cameras, key = { it.id }) { CameraCard(it, limits[it.id]) }
             }
         }
     }
 }
 
 @Composable
-private fun CameraCard(info: CameraInfo) {
+private fun CameraCard(info: CameraInfo, limit: VerifiedLimit?) {
     val colors = MaterialTheme.colorScheme
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -89,7 +91,7 @@ private fun CameraCard(info: CameraInfo) {
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
-            info.rows().forEach { (label, value) ->
+            (info.rows() + verifiedRow(limit)).forEach { (label, value) ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Text(label, modifier = Modifier.weight(0.4f), color = colors.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium)
@@ -101,11 +103,15 @@ private fun CameraCard(info: CameraInfo) {
     }
 }
 
-internal fun shareReport(context: Context, text: String) {
+internal fun shareReport(
+    context: Context,
+    text: String,
+    subject: String = "Astro Camera compatibility report",
+) {
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, text)
-        putExtra(Intent.EXTRA_SUBJECT, "Astro Camera compatibility report")
+        putExtra(Intent.EXTRA_SUBJECT, subject)
     }
     context.startActivity(Intent.createChooser(send, null))
 }

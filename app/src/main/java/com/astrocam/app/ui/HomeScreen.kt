@@ -19,19 +19,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.astrocam.app.camera.CameraInfo
-import com.astrocam.app.camera.TestedLimit
+import com.astrocam.app.camera.DeviceProfile
 import com.astrocam.app.camera.assessReadiness
+import com.astrocam.app.camera.bestBackLimit
+import com.astrocam.app.camera.describe
 import com.astrocam.app.camera.formatExposure
 
 @Composable
 fun HomeScreen(
     cameras: List<CameraInfo>,
-    tested: TestedLimit?,
+    profile: DeviceProfile,
     onOpenTester: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val readiness = remember(cameras) { assessReadiness(cameras) }
     val back = remember(cameras) { cameras.filter { it.facing == "Back" } }
+    val best = remember(profile) { profile.bestBackLimit() }
     val colors = MaterialTheme.colorScheme
 
     Scaffold(containerColor = colors.background) { padding ->
@@ -64,16 +67,11 @@ fun HomeScreen(
                         Text("Max ISO: ${maxIso ?: "n/a"}")
                         Text("RAW / DNG: ${if (back.any { it.raw }) "Yes" else "No"}")
                     }
-                    if (tested != null) {
-                        Text(
-                            "Tested long exposure: up to ${formatExposure(tested.maxNs)}" +
-                                when {
-                                    tested.brightnessConfirmed -> " (brightness confirmed)"
-                                    tested.maxNs >= 1_000_000_000L -> " (timing verified)"
-                                    else -> ""
-                                },
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                    if (best != null) {
+                        val label = if (best.verification.rank >= 2) "Verified exposure" else "Unverified exposure"
+                        Text("$label: ${best.describe()}", fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Text("Verified exposure: not tested yet", color = colors.onSurfaceVariant)
                     }
                 }
             }

@@ -46,7 +46,7 @@ val ProbeResult.maxHonoredNs: Long
 val ProbeResult.hitTestCeiling: Boolean get() = steps.isNotEmpty() && steps.all { it.honored }
 val ProbeResult.firstMissNs: Long? get() = steps.firstOrNull { !it.honored }?.requestedNs
 
-enum class BrightnessStatus { Confirmed, Inconclusive, NoData }
+enum class BrightnessStatus { Confirmed, Inconclusive, NoData, Skipped }
 
 data class BrightnessCheck(val status: BrightnessStatus, val detail: String)
 
@@ -56,7 +56,7 @@ data class BrightnessCheck(val status: BrightnessStatus, val detail: String)
  */
 fun ProbeResult.brightnessCheck(): BrightnessCheck {
     if (darkRoom) {
-        return BrightnessCheck(BrightnessStatus.NoData, "Skipped in dark room mode. Timing and frame time were used instead.")
+        return BrightnessCheck(BrightnessStatus.Skipped, "Skipped in dark room mode. Timing and frame time were used instead.")
     }
     val lumas = steps.filter { it.honored }.mapNotNull { it.luma }
     if (lumas.isEmpty()) return BrightnessCheck(BrightnessStatus.NoData, "No frame data was read.")

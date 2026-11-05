@@ -86,13 +86,19 @@ fun CameraInfo.rows(): List<Pair<String, String>> = listOf(
     else "Yes (physical IDs: ${physicalIds.joinToString()})",
 )
 
-fun buildReport(device: String, cameras: List<CameraInfo>): String = buildString {
+fun buildReport(
+    device: String,
+    cameras: List<CameraInfo>,
+    limits: Map<String, VerifiedLimit> = emptyMap(),
+): String = buildString {
     appendLine("Astro Camera - Compatibility Report")
     appendLine("Device: $device")
     appendLine("Readiness: ${assessReadiness(cameras).title}")
     cameras.forEach { camera ->
         appendLine()
         appendLine("Camera ${camera.id} (${camera.facing})")
-        camera.rows().forEach { (label, value) -> appendLine("  $label: $value") }
+        (camera.rows() + verifiedRow(limits[camera.id])).forEach { (label, value) ->
+            appendLine("  $label: $value")
+        }
     }
 }

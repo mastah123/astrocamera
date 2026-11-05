@@ -161,9 +161,10 @@ object ExposureProbe {
                         "frames arrived every ${formatExposure(measuredPeriod)}, shorter than the exposure"
                     frameDuration != null && applied != null && frameDuration < applied * 0.85 ->
                         "reported a frame time of ${formatExposure(frameDuration)}, shorter than the exposure"
-                    !darkRoom && luma != null && previous != null && previous in 8.0..190.0 &&
-                        ns >= prevNs * 2 && luma < previous * 1.15 + 1.0 ->
-                        "the picture did not get brighter as expected"
+                    !darkRoom && luma != null && previous != null && ns >= prevNs * 2 &&
+                        (luma < previous * 0.9 ||
+                            (previous in 8.0..150.0 && luma < previous * 1.15 + 1.0)) ->
+                        "the picture got darker or did not get brighter as expected"
                     else -> null
                 }
                 val honored = metadataOk && echoReason == null

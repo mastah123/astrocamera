@@ -13,7 +13,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.astrocam.app.camera.CameraDetector
-import com.astrocam.app.camera.ProbeStore
+import com.astrocam.app.camera.ProfileStore
+import com.astrocam.app.camera.appVersion
+import com.astrocam.app.camera.buildProfile
+import com.astrocam.app.camera.deviceName
 import com.astrocam.app.ui.AstroTheme
 import com.astrocam.app.ui.HomeScreen
 import com.astrocam.app.ui.NightTheme
@@ -35,7 +38,10 @@ class MainActivity : ComponentActivity() {
 private fun AstroApp() {
     val context = LocalContext.current
     val cameras = remember { CameraDetector.detect(context) }
-    var tested by remember { mutableStateOf(ProbeStore.load(context)) }
+    var limits by remember { mutableStateOf(ProfileStore.load(context)) }
+    val profile = remember(cameras, limits) {
+        buildProfile(deviceName(), appVersion(context), cameras, limits)
+    }
     var night by rememberSaveable { mutableStateOf(NightTheme.Dark) }
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
 
@@ -46,21 +52,23 @@ private fun AstroApp() {
         when (screen) {
             Screen.Home -> HomeScreen(
                 cameras = cameras,
-                tested = tested,
+                profile = profile,
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
-            Screen.Tester -> TesterScreen(cameras = cameras, onBack = { screen = Screen.Home })
+            Screen.Tester -> TesterScreen(cameras = cameras, limits = limits, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(
                 night = night,
                 onNightChange = { night = if (it) NightTheme.Red else NightTheme.Dark },
+                profile = profile,
+                onResetProfile = { limits = ProfileStore.reset(context) },
                 onOpenProbe = { screen = Screen.Probe },
                 onBack = { screen = Screen.Home },
             )
             Screen.Probe -> ProbeScreen(
                 cameras = cameras,
                 onBack = { screen = Screen.Settings },
-                onSaved = { tested = it },
+                onSaved = { limits = it },
             )
         }
     }

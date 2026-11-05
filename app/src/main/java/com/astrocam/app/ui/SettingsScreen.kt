@@ -19,27 +19,33 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.astrocam.app.camera.DeviceProfile
+import com.astrocam.app.camera.describe
+import com.astrocam.app.camera.formatExposure
+import com.astrocam.app.camera.toJson
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     night: NightTheme,
     onNightChange: (Boolean) -> Unit,
+    profile: DeviceProfile,
+    onResetProfile: () -> Unit,
     onOpenProbe: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
-    val version = remember {
-        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
-            .getOrNull().orEmpty()
-    }
+    var confirmReset by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = colors.background,
@@ -69,6 +75,37 @@ fun SettingsScreen(
                 }
             }
 
+            Text("Device profile", fontWeight = FontWeight.SemiBold)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = colors.surface),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(profile.device, color = colors.onSurfaceVariant)
+                    profile.cameras.forEach { c ->
+                        Text("Camera ${c.cameraId} · ${c.facing}", fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 6.dp))
+                        Text("Reported exposure: ${c.reportedMaxExposureNs?.let(::formatExposure) ?: "n/a"}")
+                        Text("Verified exposure: ${c.verified?.describe() ?: "not tested"}")
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { shareReport(context, profile.toJson(), "Astro Camera device profile") },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Share profile") }
+                        OutlinedButton(
+                            onClick = {
+                                if (confirmReset) { onResetProfile(); confirmReset = false } else confirmReset = true
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (confirmReset) "Tap to confirm" else "Reset limits") }
+                    }
+                }
+            }
+
             Text("Experimental", fontWeight = FontWeight.SemiBold)
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -86,8 +123,8 @@ fun SettingsScreen(
                 }
             }
 
-            if (version.isNotEmpty()) {
-                Text("Version $version", color = colors.onSurfaceVariant,
+            if (profile.appVersion.isNotEmpty()) {
+                Text("Version ${profile.appVersion}", color = colors.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall)
             }
         }

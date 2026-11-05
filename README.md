@@ -10,7 +10,7 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.3.0 covers **Stage 1: capability detection** plus an experimental **long exposure probe**.
+Version 0.5.0 covers **Stage 1: capability detection** plus an experimental **long exposure probe**.
 
 | Stage | Scope | State |
 |-------|-------|-------|
@@ -29,7 +29,7 @@ Version 0.3.0 covers **Stage 1: capability detection** plus an experimental **lo
 - Reports exposure range, ISO range, manual and infinity focus, RAW/DNG, sensor size, output formats and hardware level
 - Readiness summary on the home screen
 - Settings → Experimental → Long Exposure Test: requests real manual exposures from 1/100 s up to 5 minutes, confirms frames get brighter, and shows whether hardware or software (stacking) long exposure is possible
-- Tested exposure limit saved and shown on the home screen
+- Verified device profile: the real exposure limit per camera, how it was proven, shareable as JSON
 - Shareable plain-text reports
 - Dark interface with a red night-vision mode
 - Fully offline. The camera permission is requested only when you run the Long Exposure Test
