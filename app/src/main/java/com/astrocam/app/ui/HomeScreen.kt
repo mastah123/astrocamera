@@ -67,7 +67,11 @@ fun HomeScreen(
                     if (tested != null) {
                         Text(
                             "Tested long exposure: up to ${formatExposure(tested.maxNs)}" +
-                                if (tested.brightnessConfirmed) " (brightness confirmed)" else "",
+                                when {
+                                    tested.brightnessConfirmed -> " (brightness confirmed)"
+                                    tested.maxNs >= 1_000_000_000L -> " (timing verified)"
+                                    else -> ""
+                                },
                             fontWeight = FontWeight.SemiBold,
                         )
                     }

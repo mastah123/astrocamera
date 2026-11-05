@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -43,6 +44,7 @@ import com.astrocam.app.camera.CameraInfo
 import com.astrocam.app.camera.ExposureProbe
 import com.astrocam.app.camera.ProbeDepth
 import com.astrocam.app.camera.ProbeResult
+import com.astrocam.app.camera.RequestMode
 import com.astrocam.app.camera.ProbeStore
 import com.astrocam.app.camera.TestedLimit
 import com.astrocam.app.camera.assess
@@ -72,6 +74,8 @@ fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (TestedL
     var running by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf("") }
     var depth by remember { mutableStateOf(ProbeDepth.Quick) }
+    var mode by remember { mutableStateOf(RequestMode.Standard) }
+    var darkRoom by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
 
     // Keep the screen awake while a long test runs.
@@ -88,7 +92,7 @@ fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (TestedL
                 val collected = mutableListOf<ProbeResult>()
                 try {
                     for (camera in cameras.filter { it.facing == "Back" }) {
-                        collected += ExposureProbe.run(context, camera, depth) { progress = it }
+                        collected += ExposureProbe.run(context, camera, depth, mode, darkRoom) { progress = it }
                         results = collected.toList()
                     }
                     progress = if (collected.isEmpty()) "No rear camera to test." else "Done"
@@ -153,6 +157,31 @@ fun ProbeScreen(cameras: List<CameraInfo>, onBack: () -> Unit, onSaved: (TestedL
                     }
                 }
             }
+            Text("Camera2 request mode", fontWeight = FontWeight.SemiBold)
+            RequestMode.values().forEach { option ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable(enabled = !running) { mode = option },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = mode == option, onClick = { mode = option }, enabled = !running)
+                    Column {
+                        Text(option.label)
+                        Text(option.hint, style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant)
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Dark room mode")
+                    Text(
+                        "Skip brightness checks. Use this with the lens covered or in total darkness.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = darkRoom, onCheckedChange = { darkRoom = it }, enabled = !running)
+            }
             Text(
                 "Each step runs only if the previous one worked, so the test stops early on phones " +
                     "with lower limits. Long tests use battery and may warm the phone.",
@@ -190,7 +219,8 @@ private fun ResultCard(result: ProbeResult) {
         colors = CardDefaults.cardColors(containerColor = colors.surface),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Camera ${result.cameraId}", color = colors.onSurfaceVariant)
+            Text("Camera ${result.cameraId}" + if (result.modeLabel.isNotEmpty()) " · ${result.modeLabel}" else "",
+                color = colors.onSurfaceVariant)
             Text(verdict.path.title, style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold)
             Text(verdict.summary, modifier = Modifier.padding(bottom = 8.dp))
@@ -201,9 +231,14 @@ private fun ResultCard(result: ProbeResult) {
                 Text("${formatExposure(s.requestedNs)} → $got  $mark$luma${s.timing()}")
             }
             if (result.manualHonored) {
-                Text("Brightness check: ${brightness.status.name.lowercase()}",
-                    fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-                Text(brightness.detail, color = colors.onSurfaceVariant)
+                if (result.darkRoom) {
+                    Text("Verified by timing and frame time, not by light.",
+                        color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                } else {
+                    Text("Brightness check: ${brightness.status.name.lowercase()}",
+                        fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                    Text(brightness.detail, color = colors.onSurfaceVariant)
+                }
             }
             if (result.isoRequested != null) {
                 Text("ISO ${result.isoRequested} → ${result.isoApplied ?: "n/a"}")

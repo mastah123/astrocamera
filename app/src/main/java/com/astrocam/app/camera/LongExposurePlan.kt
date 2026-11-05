@@ -36,6 +36,8 @@ data class ProbeResult(
     val isoApplied: Int?,
     val autoBoostNs: Long?,
     val error: String? = null,
+    val modeLabel: String = "",
+    val darkRoom: Boolean = false,
 )
 
 val ProbeResult.manualHonored: Boolean get() = steps.count { it.honored } >= 2
@@ -53,6 +55,9 @@ data class BrightnessCheck(val status: BrightnessStatus, val detail: String)
  * YUV white is about 235, so anything above 230 is treated as clipped.
  */
 fun ProbeResult.brightnessCheck(): BrightnessCheck {
+    if (darkRoom) {
+        return BrightnessCheck(BrightnessStatus.NoData, "Skipped in dark room mode. Timing and frame time were used instead.")
+    }
     val lumas = steps.filter { it.honored }.mapNotNull { it.luma }
     if (lumas.isEmpty()) return BrightnessCheck(BrightnessStatus.NoData, "No frame data was read.")
     val usable = lumas.filter { it < 230.0 }
@@ -148,6 +153,7 @@ fun probeReport(device: String, results: List<ProbeResult>): String = buildStrin
         val v = assess(r)
         appendLine()
         appendLine("Camera ${r.cameraId}: ${v.path.title}")
+        if (r.modeLabel.isNotEmpty()) appendLine("  Mode: ${r.modeLabel}${if (r.darkRoom) ", dark room" else ""}")
         appendLine("  ${v.summary}")
         r.steps.forEach { s ->
             val got = s.appliedNs?.let(::formatExposure) ?: "no result"

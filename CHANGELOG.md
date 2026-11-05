@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
+### Added
+- Dark room mode switch: skips brightness checks so the test works with no light.
+- Camera2 request mode switch: Standard, Manual template and Repeating stream.
+- Repeating mode verifies exposure using sensor frame timestamps.
+- Vendor extension detection (Night, HDR, Bokeh) in the compatibility report.
+- Home screen shows "timing verified" when the limit was proven by timing.
+
+### Changed
+- Brightness check is skipped automatically in dark room mode.
+
 ## [0.3.2] - 2026-11-05
 
 ### Fixed

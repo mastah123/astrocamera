@@ -5,6 +5,7 @@ import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
+import android.os.Build
 
 /** Hardware capabilities of one camera, as reported by Camera2. */
 data class CameraInfo(
@@ -26,6 +27,7 @@ data class CameraInfo(
     val awbModeCount: Int,
     val formats: List<String>,
     val physicalIds: List<String>,
+    val extensions: List<String> = emptyList(),
 )
 
 object CameraDetector {
@@ -35,11 +37,11 @@ object CameraDetector {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val ids = runCatching { manager.cameraIdList.toList() }.getOrDefault(emptyList())
         return ids.mapNotNull { id ->
-            runCatching { read(id, manager.getCameraCharacteristics(id)) }.getOrNull()
+            runCatching { read(id, manager.getCameraCharacteristics(id), detectExtensions(manager, id)) }.getOrNull()
         }
     }
 
-    private fun read(id: String, c: CameraCharacteristics): CameraInfo {
+    private fun read(id: String, c: CameraCharacteristics, extensions: List<String>): CameraInfo {
         val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
         val pixel = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
         val minFocus = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
@@ -90,7 +92,26 @@ object CameraDetector {
             awbModeCount = c.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)?.size ?: 0,
             formats = formats,
             physicalIds = c.physicalCameraIds.sorted(),
+            extensions = extensions,
         )
+    }
+
+    /** Vendor extensions (for example the maker's Night mode). Needs Android 12 or newer. */
+    private fun detectExtensions(manager: CameraManager, id: String): List<String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptyList()
+        return runCatching {
+            manager.getCameraExtensionCharacteristics(id).supportedExtensions
+                .map { extensionName(it) }.sorted()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun extensionName(type: Int): String = when (type) {
+        0 -> "Auto"
+        1 -> "Bokeh"
+        2 -> "Face retouch"
+        3 -> "HDR"
+        4 -> "Night"
+        else -> "Vendor $type"
     }
 
     private fun formatName(format: Int): String = when (format) {

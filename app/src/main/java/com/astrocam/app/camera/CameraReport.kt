@@ -77,6 +77,11 @@ fun CameraInfo.rows(): List<Pair<String, String>> = listOf(
         else -> "No"
     },
     "Output formats" to formats.joinToString().ifEmpty { "Unknown" },
+    "Vendor extensions" to when {
+        extensions.isEmpty() -> "None found"
+        "Night" in extensions -> extensions.joinToString() + " (Night mode could allow longer exposures)"
+        else -> extensions.joinToString()
+    },
     "Logical multi-camera" to if (physicalIds.isEmpty()) "No"
     else "Yes (physical IDs: ${physicalIds.joinToString()})",
 )

@@ -49,6 +49,15 @@ enum class ProbeDepth(val label: String, extraNs: List<Long>) {
     val worstCaseSeconds: Int get() = (ladderNs.sum() / SEC).toInt() + ladderNs.size * 2 + 20
 }
 
+/** Which Camera2 request style the test uses. Some phones only honor one of them. */
+enum class RequestMode(val label: String, val hint: String) {
+    Standard("Standard", "Single still request with auto-control off"),
+    ManualTemplate("Manual template", "Full manual mode (CONTROL_MODE_OFF)"),
+    Repeating("Repeating stream", "Manual values on a preview stream, checked by frame timestamps (2-3x slower)"),
+}
+
+private class Capture(val result: TotalCaptureResult, val periodNs: Long?)
+
 /**
  * Sends real manual-exposure requests and reads back what the camera actually
  * used, then checks that the frames really get brighter. Phones that do not
@@ -63,6 +72,8 @@ object ExposureProbe {
         context: Context,
         info: CameraInfo,
         depth: ProbeDepth,
+        mode: RequestMode,
+        darkRoom: Boolean,
         onProgress: (String) -> Unit,
     ): ProbeResult {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -76,7 +87,7 @@ object ExposureProbe {
             val size = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(ImageFormat.YUV_420_888)
                 ?.minByOrNull { it.width * it.height }
-                ?: return failed(info.id, "No YUV output size available.")
+                ?: return failed(info.id, "No YUV output size available.", mode, darkRoom)
 
             val frameCount = AtomicInteger(0)
             val lumaX100 = AtomicInteger(-1)
@@ -108,20 +119,22 @@ object ExposureProbe {
 
             for (ns in depth.ladderNs) {
                 onProgress("Camera ${info.id}: exposing ${formatExposure(ns)}")
-                val request = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                    addTarget(imageReader.surface)
-                    set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, ns)
-                    set(CaptureRequest.SENSOR_SENSITIVITY, iso)
-                    set(CaptureRequest.SENSOR_FRAME_DURATION, ns + 50_000_000L)
-                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                    set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
-                }.build()
+                val request = try {
+                    buildRequest(cam, mode, imageReader.surface, ns, iso)
+                } catch (e: IllegalArgumentException) {
+                    return failed(info.id, "${mode.label} mode is not supported by this camera.", mode, darkRoom)
+                }
 
                 val before = frameCount.get()
                 val startedAt = SystemClock.elapsedRealtime()
-                val result = captureOnce(sess, request, handler, ns / 1_000_000L + 8_000L)
+                val capture = if (mode == RequestMode.Repeating) {
+                    captureRepeating(sess, request, handler, ns)
+                } else {
+                    captureOnce(sess, request, handler, ns / 1_000_000L + 8_000L)?.let { Capture(it, null) }
+                }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
+                val result = capture?.result
+                val measuredPeriod = capture?.periodNs
                 val applied = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 isoApplied = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: isoApplied
                 val frameDuration = result?.get(CaptureResult.SENSOR_FRAME_DURATION)
@@ -138,15 +151,17 @@ object ExposureProbe {
                 }
 
                 // A real exposure cannot finish early, cannot exceed its frame time,
-                // and must make the picture brighter.
+                // and (when there is light) must make the picture brighter.
                 val previous = prevLuma
                 val echoReason: String? = when {
                     !metadataOk -> null
                     ns >= SEC && elapsed < ns / 1_000_000L * 0.85 ->
                         "finished in ${formatExposure(elapsed * 1_000_000L)}, too fast to be real"
+                    measuredPeriod != null && applied != null && measuredPeriod < applied * 0.85 ->
+                        "frames arrived every ${formatExposure(measuredPeriod)}, shorter than the exposure"
                     frameDuration != null && applied != null && frameDuration < applied * 0.85 ->
                         "reported a frame time of ${formatExposure(frameDuration)}, shorter than the exposure"
-                    luma != null && previous != null && previous in 8.0..190.0 &&
+                    !darkRoom && luma != null && previous != null && previous in 8.0..190.0 &&
                         ns >= prevNs * 2 && luma < previous * 1.15 + 1.0 ->
                         "the picture did not get brighter as expected"
                     else -> null
@@ -163,11 +178,11 @@ object ExposureProbe {
             onProgress("Camera ${info.id}: testing auto night boost")
             val boost = runCatching { autoBoost(cam, sess, imageReader.surface, chars, handler) }.getOrNull()
 
-            return ProbeResult(info.id, steps, iso, isoApplied, boost)
+            return ProbeResult(info.id, steps, iso, isoApplied, boost, modeLabel = mode.label, darkRoom = darkRoom)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return failed(info.id, e.message ?: e.javaClass.simpleName)
+            return failed(info.id, e.message ?: e.javaClass.simpleName, mode, darkRoom)
         } finally {
             runCatching { session?.close() }
             runCatching { device?.close() }
@@ -176,8 +191,75 @@ object ExposureProbe {
         }
     }
 
-    private fun failed(id: String, message: String) =
-        ProbeResult(id, emptyList(), null, null, null, message)
+    private fun failed(id: String, message: String, mode: RequestMode, darkRoom: Boolean) =
+        ProbeResult(id, emptyList(), null, null, null, message, mode.label, darkRoom)
+
+    private fun buildRequest(
+        cam: CameraDevice, mode: RequestMode, surface: Surface, ns: Long, iso: Int,
+    ): CaptureRequest {
+        val template = when (mode) {
+            RequestMode.Standard -> CameraDevice.TEMPLATE_STILL_CAPTURE
+            RequestMode.ManualTemplate -> CameraDevice.TEMPLATE_MANUAL
+            RequestMode.Repeating -> CameraDevice.TEMPLATE_PREVIEW
+        }
+        return cam.createCaptureRequest(template).apply {
+            addTarget(surface)
+            if (mode == RequestMode.ManualTemplate) {
+                set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
+            }
+            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            set(CaptureRequest.SENSOR_EXPOSURE_TIME, ns)
+            set(CaptureRequest.SENSOR_SENSITIVITY, iso)
+            set(CaptureRequest.SENSOR_FRAME_DURATION, ns + 50_000_000L)
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
+        }.build()
+    }
+
+    /**
+     * Runs the request as a repeating stream and measures the real time between
+     * consecutive frame timestamps, which the sensor sets and cannot be echoed.
+     */
+    private suspend fun captureRepeating(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        handler: Handler,
+        ns: Long,
+    ): Capture? {
+        val capture = withTimeoutOrNull(ns / 1_000_000L * 4 + 8_000L) {
+            suspendCancellableCoroutine<Capture?> { cont ->
+                var count = 0
+                var previousTimestamp: Long? = null
+                try {
+                    session.setRepeatingRequest(request, object : CameraCaptureSession.CaptureCallback() {
+                        override fun onCaptureCompleted(
+                            s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult,
+                        ) {
+                            count++
+                            val applied = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                            val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+                            val last = previousTimestamp
+                            val period = if (timestamp != null && last != null) timestamp - last else null
+                            previousTimestamp = timestamp
+                            val matches = applied != null && abs(applied - ns) <= ns * 0.15
+                            if (cont.isActive && ((matches && period != null) || count >= 4)) {
+                                cont.resume(Capture(result, period))
+                            }
+                        }
+                        override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    }, handler)
+                } catch (e: Exception) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
+        }
+        runCatching { session.stopRepeating() }
+        runCatching { session.abortCaptures() }
+        delay(300)
+        return capture
+    }
 
     /** Average brightness of the Y plane, sampled sparsely. 0 to 255. */
     private fun meanLuma(image: Image): Double? {
