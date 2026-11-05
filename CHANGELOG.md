@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-05
+
+### Fixed
+- Brightness check reported "confirmed" on noisy, clipped data. It now treats near-white frames as clipped and requires steadily rising brightness.
+- Long Exposure Test trusted capture metadata alone. It now measures real elapsed time and rejects exposures that finish too fast to be real.
+- Previously saved tested limits are ignored, since they were measured without the timing check.
+- "1 frames" wording in the software plan.
+
 ## [0.3.0] - 2026-11-05
 
 ### Added

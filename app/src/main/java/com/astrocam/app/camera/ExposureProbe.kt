@@ -17,6 +17,7 @@ import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Range
 import android.view.Surface
 import java.util.concurrent.Executor
@@ -116,10 +117,15 @@ object ExposureProbe {
                 }.build()
 
                 val before = frameCount.get()
+                val startedAt = SystemClock.elapsedRealtime()
                 val result = captureOnce(sess, request, handler, ns / 1_000_000L + 8_000L)
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
                 val applied = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 isoApplied = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: isoApplied
-                val honored = applied != null && abs(applied - ns) <= ns * 0.15
+                val metadataOk = applied != null && abs(applied - ns) <= ns * 0.15
+                // A real exposure cannot finish before it has run for its full length.
+                val echoed = metadataOk && ns >= SEC && elapsed < ns / 1_000_000L * 0.85
+                val honored = metadataOk && !echoed
 
                 var luma: Double? = null
                 if (result != null) {
@@ -130,7 +136,7 @@ object ExposureProbe {
                     }
                     if (frameCount.get() > before) luma = lumaX100.get() / 100.0
                 }
-                steps += ExposureStep(ns, applied, honored, luma)
+                steps += ExposureStep(ns, applied, honored, luma, elapsed, echoed)
                 if (!honored) break
             }
 

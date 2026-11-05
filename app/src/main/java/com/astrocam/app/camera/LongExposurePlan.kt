@@ -10,7 +10,17 @@ data class ExposureStep(
     val appliedNs: Long?,
     val honored: Boolean,
     val luma: Double? = null,
+    val elapsedMs: Long? = null,
+    /** Metadata matched, but the capture finished far too fast to be a real exposure. */
+    val echoed: Boolean = false,
 )
+
+fun ExposureStep.timing(): String =
+    if (requestedNs >= 1_000_000_000L && elapsedMs != null)
+        "  took %.1f s".format(Locale.US, elapsedMs / 1000.0) else ""
+
+fun PlanRow.framesLabel(): String = if (frames == 1) "1 frame" else "$frames frames"
+
 
 data class ProbeResult(
     val cameraId: String,
@@ -31,21 +41,31 @@ enum class BrightnessStatus { Confirmed, Inconclusive, NoData }
 
 data class BrightnessCheck(val status: BrightnessStatus, val detail: String)
 
-/** Checks that longer exposures really produce brighter frames, not just matching metadata. */
+/**
+ * Checks that longer exposures really produce brighter frames, not just matching metadata.
+ * YUV white is about 235, so anything above 230 is treated as clipped.
+ */
 fun ProbeResult.brightnessCheck(): BrightnessCheck {
     val lumas = steps.filter { it.honored }.mapNotNull { it.luma }
     if (lumas.isEmpty()) return BrightnessCheck(BrightnessStatus.NoData, "No frame data was read.")
-    val unsaturated = lumas.filter { it < 245.0 }
-    if (unsaturated.size < 2) {
-        return BrightnessCheck(BrightnessStatus.Inconclusive, "Scene too bright to compare frames. Try a dimmer scene.")
+    val usable = lumas.filter { it < 230.0 }
+    if (usable.size < 2) {
+        return BrightnessCheck(BrightnessStatus.Inconclusive, "Scene too bright, frames clipped. Try a dimmer scene.")
     }
-    val first = unsaturated.first()
-    val last = unsaturated.last()
-    val range = "%.0f → %.0f".format(Locale.US, first, last)
-    return if (last - first >= 3.0) {
-        BrightnessCheck(BrightnessStatus.Confirmed, "Frames got brighter with longer exposure (luma $range).")
-    } else {
-        BrightnessCheck(BrightnessStatus.Inconclusive, "Frames did not get clearly brighter (luma $range). The scene may be too dark.")
+    val range = "%.0f → %.0f".format(Locale.US, usable.first(), usable.last())
+    val steady = usable.zipWithNext().all { (a, b) -> b >= a - 5.0 }
+    return when {
+        !steady -> BrightnessCheck(
+            BrightnessStatus.Inconclusive,
+            "Brightness went up and down (luma ${usable.joinToString("/") { "%.0f".format(Locale.US, it) }}). " +
+                "Lighting changed, the phone moved, or exposure is not being applied. Try a dimmer, steadier scene."
+        )
+        usable.last() - usable.first() >= 3.0 -> BrightnessCheck(
+            BrightnessStatus.Confirmed, "Frames got steadily brighter with longer exposure (luma $range)."
+        )
+        else -> BrightnessCheck(
+            BrightnessStatus.Inconclusive, "Frames did not get clearly brighter (luma $range). The scene may be too dark."
+        )
     }
 }
 
@@ -71,9 +91,15 @@ data class Verdict(
 
 private val TARGETS_SECONDS = listOf(10, 30, 60, 300)
 
-private fun ceilingNote(r: ProbeResult): String = when {
-    r.hitTestCeiling -> "This was the highest value tested, so the real limit may be higher."
-    else -> r.firstMissNs?.let { "The camera did not honor ${formatExposure(it)}." }.orEmpty()
+private fun ceilingNote(r: ProbeResult): String {
+    val miss = r.steps.firstOrNull { !it.honored }
+    return when {
+        r.hitTestCeiling -> "This was the highest value tested, so the real limit may be higher."
+        miss != null && miss.echoed -> "The camera reported ${formatExposure(miss.requestedNs)} but finished in " +
+            "${formatExposure((miss.elapsedMs ?: 0L) * 1_000_000L)}, so it did not really expose that long."
+        miss != null -> "The camera did not honor ${formatExposure(miss.requestedNs)}."
+        else -> ""
+    }
 }
 
 fun assess(result: ProbeResult): Verdict {
@@ -119,7 +145,8 @@ fun probeReport(device: String, results: List<ProbeResult>): String = buildStrin
         r.steps.forEach { s ->
             val got = s.appliedNs?.let(::formatExposure) ?: "no result"
             val luma = s.luma?.let { " luma %.0f".format(Locale.US, it) } ?: ""
-            appendLine("  Requested ${formatExposure(s.requestedNs)} -> got $got ${if (s.honored) "OK" else "NOT HONORED"}$luma")
+            val verdictText = when { s.honored -> "OK"; s.echoed -> "ECHOED (too fast)"; else -> "NOT HONORED" }
+            appendLine("  Requested ${formatExposure(s.requestedNs)} -> got $got $verdictText$luma${s.timing()}")
         }
         if (r.manualHonored) appendLine("  Brightness check: ${r.brightnessCheck().status} - ${r.brightnessCheck().detail}")
         if (r.isoRequested != null) {
@@ -127,7 +154,7 @@ fun probeReport(device: String, results: List<ProbeResult>): String = buildStrin
         }
         r.autoBoostNs?.let { appendLine("  Auto exposure at max boost: ${formatExposure(it)}") }
         v.rows.forEach {
-            appendLine("  ${it.targetSeconds} s total -> ${it.frames} frames, noise x${"%.1f".format(Locale.US, it.snrGain)} better")
+            appendLine("  ${it.targetSeconds} s total -> ${it.framesLabel()}, noise x${"%.1f".format(Locale.US, it.snrGain)} better")
         }
     }
 }

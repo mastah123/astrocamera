@@ -49,6 +49,8 @@ import com.astrocam.app.camera.assess
 import com.astrocam.app.camera.brightnessCheck
 import com.astrocam.app.camera.deviceName
 import com.astrocam.app.camera.formatExposure
+import com.astrocam.app.camera.framesLabel
+import com.astrocam.app.camera.timing
 import com.astrocam.app.camera.manualHonored
 import com.astrocam.app.camera.maxHonoredNs
 import com.astrocam.app.camera.probeReport
@@ -195,7 +197,8 @@ private fun ResultCard(result: ProbeResult) {
             result.steps.forEach { s ->
                 val got = s.appliedNs?.let(::formatExposure) ?: "no result"
                 val luma = s.luma?.let { "  (luma %.0f)".format(Locale.US, it) } ?: ""
-                Text("${formatExposure(s.requestedNs)} → $got  ${if (s.honored) "✓" else "✗"}$luma")
+                val mark = when { s.honored -> "✓"; s.echoed -> "✗ too fast"; else -> "✗" }
+                Text("${formatExposure(s.requestedNs)} → $got  $mark$luma${s.timing()}")
             }
             if (result.manualHonored) {
                 Text("Brightness check: ${brightness.status.name.lowercase()}",
@@ -210,7 +213,7 @@ private fun ResultCard(result: ProbeResult) {
                 Text("Software long exposure plan", fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 8.dp))
                 verdict.rows.forEach {
-                    Text("${it.targetSeconds} s total → ${it.frames} frames, " +
+                    Text("${it.targetSeconds} s total → ${it.framesLabel()}, " +
                         "noise ×${"%.1f".format(Locale.US, it.snrGain)} better")
                 }
             }
