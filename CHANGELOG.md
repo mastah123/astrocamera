@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-05
+
+### Fixed
+- Long Exposure Test accepted sub-second exposures that were not applied. It now also rejects a step when the reported frame time is shorter than the exposure, or when the picture does not get brighter as exposure rises.
+- Previously saved tested limits are ignored again.
+
+### Changed
+- Test ladder has finer steps (50 ms, 200 ms) to locate the real limit.
+- Each result shows the reason a step was rejected and the reported frame time.
+
 ## [0.3.1] - 2026-11-05
 
 ### Fixed

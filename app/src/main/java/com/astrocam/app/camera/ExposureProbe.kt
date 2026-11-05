@@ -33,7 +33,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 private const val SEC = 1_000_000_000L
 
 internal val BASE_LADDER_NS: List<Long> = listOf(
-    10_000_000L, 100_000_000L, 500_000_000L, 1 * SEC, 2 * SEC, 4 * SEC, 8 * SEC,
+    10_000_000L, 50_000_000L, 100_000_000L, 200_000_000L, 500_000_000L, 1 * SEC, 2 * SEC, 4 * SEC, 8 * SEC,
 )
 
 /** How far the test climbs. Each step runs only if the previous one was honored. */
@@ -103,6 +103,8 @@ object ExposureProbe {
             val iso = TEST_ISO.coerceIn(info.isoRange?.start ?: TEST_ISO, info.isoRange?.endInclusive ?: TEST_ISO)
             val steps = mutableListOf<ExposureStep>()
             var isoApplied: Int? = null
+            var prevNs = 0L
+            var prevLuma: Double? = null
 
             for (ns in depth.ladderNs) {
                 onProgress("Camera ${info.id}: exposing ${formatExposure(ns)}")
@@ -122,10 +124,8 @@ object ExposureProbe {
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 val applied = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 isoApplied = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: isoApplied
+                val frameDuration = result?.get(CaptureResult.SENSOR_FRAME_DURATION)
                 val metadataOk = applied != null && abs(applied - ns) <= ns * 0.15
-                // A real exposure cannot finish before it has run for its full length.
-                val echoed = metadataOk && ns >= SEC && elapsed < ns / 1_000_000L * 0.85
-                val honored = metadataOk && !echoed
 
                 var luma: Double? = null
                 if (result != null) {
@@ -136,7 +136,27 @@ object ExposureProbe {
                     }
                     if (frameCount.get() > before) luma = lumaX100.get() / 100.0
                 }
-                steps += ExposureStep(ns, applied, honored, luma, elapsed, echoed)
+
+                // A real exposure cannot finish early, cannot exceed its frame time,
+                // and must make the picture brighter.
+                val previous = prevLuma
+                val echoReason: String? = when {
+                    !metadataOk -> null
+                    ns >= SEC && elapsed < ns / 1_000_000L * 0.85 ->
+                        "finished in ${formatExposure(elapsed * 1_000_000L)}, too fast to be real"
+                    frameDuration != null && applied != null && frameDuration < applied * 0.85 ->
+                        "reported a frame time of ${formatExposure(frameDuration)}, shorter than the exposure"
+                    luma != null && previous != null && previous in 8.0..190.0 &&
+                        ns >= prevNs * 2 && luma < previous * 1.15 + 1.0 ->
+                        "the picture did not get brighter as expected"
+                    else -> null
+                }
+                val honored = metadataOk && echoReason == null
+                if (honored) {
+                    prevNs = ns
+                    prevLuma = luma ?: prevLuma
+                }
+                steps += ExposureStep(ns, applied, honored, luma, elapsed, echoReason, frameDuration)
                 if (!honored) break
             }
 

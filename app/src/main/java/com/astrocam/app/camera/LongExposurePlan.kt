@@ -11,13 +11,20 @@ data class ExposureStep(
     val honored: Boolean,
     val luma: Double? = null,
     val elapsedMs: Long? = null,
-    /** Metadata matched, but the capture finished far too fast to be a real exposure. */
-    val echoed: Boolean = false,
-)
+    /** Why a metadata match was rejected as not a real exposure, if it was. */
+    val echoReason: String? = null,
+    val frameDurationNs: Long? = null,
+) {
+    val echoed: Boolean get() = echoReason != null
+}
 
-fun ExposureStep.timing(): String =
-    if (requestedNs >= 1_000_000_000L && elapsedMs != null)
+fun ExposureStep.timing(): String {
+    val took = if (requestedNs >= 1_000_000_000L && elapsedMs != null)
         "  took %.1f s".format(Locale.US, elapsedMs / 1000.0) else ""
+    val frame = if (requestedNs >= 100_000_000L && frameDurationNs != null)
+        "  frame ${formatExposure(frameDurationNs)}" else ""
+    return took + frame
+}
 
 fun PlanRow.framesLabel(): String = if (frames == 1) "1 frame" else "$frames frames"
 
@@ -95,8 +102,8 @@ private fun ceilingNote(r: ProbeResult): String {
     val miss = r.steps.firstOrNull { !it.honored }
     return when {
         r.hitTestCeiling -> "This was the highest value tested, so the real limit may be higher."
-        miss != null && miss.echoed -> "The camera reported ${formatExposure(miss.requestedNs)} but finished in " +
-            "${formatExposure((miss.elapsedMs ?: 0L) * 1_000_000L)}, so it did not really expose that long."
+        miss != null && miss.echoReason != null ->
+            "The camera reported ${formatExposure(miss.requestedNs)} but ${miss.echoReason}."
         miss != null -> "The camera did not honor ${formatExposure(miss.requestedNs)}."
         else -> ""
     }
@@ -145,7 +152,7 @@ fun probeReport(device: String, results: List<ProbeResult>): String = buildStrin
         r.steps.forEach { s ->
             val got = s.appliedNs?.let(::formatExposure) ?: "no result"
             val luma = s.luma?.let { " luma %.0f".format(Locale.US, it) } ?: ""
-            val verdictText = when { s.honored -> "OK"; s.echoed -> "ECHOED (too fast)"; else -> "NOT HONORED" }
+            val verdictText = when { s.honored -> "OK"; s.echoed -> "ECHOED (${s.echoReason})"; else -> "NOT HONORED" }
             appendLine("  Requested ${formatExposure(s.requestedNs)} -> got $got $verdictText$luma${s.timing()}")
         }
         if (r.manualHonored) appendLine("  Brightness check: ${r.brightnessCheck().status} - ${r.brightnessCheck().detail}")
