@@ -10,7 +10,7 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.8.0 covers **Stages 1 to 4**: capability detection, an experimental **long exposure probe**, a live preview with manual controls, and multi-frame capture with a self-timer. A **RAW capture test** checks whether the phone really supports RAW.
+Version 0.9.0 covers **Stages 1 to 5**, including a **Stacking Studio**. Earlier stages: capability detection, an experimental **long exposure probe**, a live preview with manual controls, and multi-frame capture with a self-timer. A **RAW capture test** checks whether the phone really supports RAW.
 
 | Stage | Scope | State |
 |-------|-------|-------|
@@ -19,12 +19,13 @@ Version 0.8.0 covers **Stages 1 to 4**: capability detection, an experimental **
 | 2 | Camera preview and manual controls | Done |
 | 3 | Astrophotography capture mode (single frame, self-timer) | Done |
 | 4 | Multi-frame capture and RAW test | Done |
-| 5 | Image stacking | Planned |
+| 5 | Image stacking | Done (alignment is translation only) |
 | 6 | Gallery and processing | Planned |
 | 7 | Optimization and device compatibility | Planned |
 
 ## Features
 
+- Stacking Studio: align and average frames, or make star trails
 - Multi-frame capture (up to 100 frames) saved to a session folder with minimal processing
 - Capture button with self-timer; photos saved to Pictures/AstroCamera with their settings logged
 - Live preview with manual exposure, ISO and focus, limited to what the phone really does

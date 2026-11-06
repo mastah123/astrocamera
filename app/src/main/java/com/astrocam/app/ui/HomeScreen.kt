@@ -30,6 +30,7 @@ fun HomeScreen(
     cameras: List<CameraInfo>,
     profile: DeviceProfile,
     onOpenAstro: () -> Unit,
+    onOpenStack: () -> Unit,
     onOpenTester: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -79,6 +80,9 @@ fun HomeScreen(
 
             Button(onClick = onOpenAstro, modifier = Modifier.fillMaxWidth()) {
                 Text("Astro Camera")
+            }
+            OutlinedButton(onClick = onOpenStack, modifier = Modifier.fillMaxWidth()) {
+                Text("Stacking Studio")
             }
             OutlinedButton(onClick = onOpenTester, modifier = Modifier.fillMaxWidth()) {
                 Text("Camera Tester")

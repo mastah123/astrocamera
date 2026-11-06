@@ -105,6 +105,10 @@ fun DeviceProfile.toJson(): String = JSONObject().apply {
     })
 }.toString(2)
 
+fun appBuild(context: Context): Long =
+    runCatching { context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode }
+        .getOrDefault(0L)
+
 fun appVersion(context: Context): String =
     runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
         .getOrNull().orEmpty()

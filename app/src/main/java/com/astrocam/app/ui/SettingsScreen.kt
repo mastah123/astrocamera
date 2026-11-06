@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.astrocam.app.camera.DeviceProfile
+import com.astrocam.app.camera.appBuild
 import com.astrocam.app.camera.describe
 import com.astrocam.app.camera.formatExposure
 import com.astrocam.app.camera.toJson
@@ -65,6 +66,19 @@ fun SettingsScreen(
             modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = colors.surface),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Astro Camera", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Version ${profile.appVersion.ifEmpty { "unknown" }} (build ${appBuild(context)})",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+            }
+
             Text("Appearance", fontWeight = FontWeight.SemiBold)
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -128,10 +142,6 @@ fun SettingsScreen(
                 }
             }
 
-            if (profile.appVersion.isNotEmpty()) {
-                Text("Version ${profile.appVersion}", color = colors.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall)
-            }
         }
     }
 }

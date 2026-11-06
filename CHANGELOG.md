@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-05
+
+### Added
+- Stacking Studio: pick a multi-frame capture, then align and average it, or build a star-trails image.
+- Star-based alignment: finds stars in each frame and lines the frames up by voting on the shift (translation only).
+- Brightness boost (off, medium, strong) with the same stretch applied to the stack and to a single frame, so the two compare fairly.
+- Single frame versus stacked view for comparing the result.
+- Results saved to Pictures/AstroCamera/STACKED and shown with how many frames were used or rejected.
+- Version number and build number card at the top of Settings.
+
+### Changed
+- App requests a large memory heap so full-size frames can be stacked.
+- Removed the small version line at the bottom of Settings.
+
 ## [0.8.0] - 2026-11-05
 
 ### Added

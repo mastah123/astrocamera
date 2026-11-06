@@ -25,9 +25,10 @@ import com.astrocam.app.ui.NightTheme
 import com.astrocam.app.ui.ProbeScreen
 import com.astrocam.app.ui.RawScreen
 import com.astrocam.app.ui.SettingsScreen
+import com.astrocam.app.ui.StackScreen
 import com.astrocam.app.ui.TesterScreen
 
-private enum class Screen { Home, Astro, Tester, Settings, Probe, Raw }
+private enum class Screen { Home, Astro, Stack, Tester, Settings, Probe, Raw }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,10 +60,12 @@ private fun AstroApp() {
                 cameras = cameras,
                 profile = profile,
                 onOpenAstro = { screen = Screen.Astro },
+                onOpenStack = { screen = Screen.Stack },
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
             Screen.Astro -> AstroScreen(limits = limitsForControls, onBack = { screen = Screen.Home })
+            Screen.Stack -> StackScreen(onBack = { screen = Screen.Home })
             Screen.Tester -> TesterScreen(cameras = cameras, profile = profile, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(
                 night = night,

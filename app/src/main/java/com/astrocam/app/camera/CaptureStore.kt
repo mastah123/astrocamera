@@ -54,6 +54,10 @@ object CaptureStore {
             .getOrNull()?.let { name }
     }
 
+    /** Saves a stacked image. Returns the file name, or null if saving failed. */
+    fun saveStacked(context: Context, jpeg: ByteArray, name: String): String? =
+        runCatching { write(context, jpeg, name, "image/jpeg", "AstroCamera/STACKED") }.getOrNull()?.let { name }
+
     private fun write(context: Context, bytes: ByteArray, name: String, mime: String, folder: String): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             // Android 9 needs a storage permission for the gallery, so use the app's own folder.
