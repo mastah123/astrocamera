@@ -50,7 +50,7 @@ private class Placed(val ref: FrameRef, val sx: Int, val sy: Int, val weight: In
  * Inputs can carry weights, so stacked batches combine correctly.
  */
 object Stacker {
-    private const val MAX_FRAMES = 250
+    private const val MAX_FRAMES = 1200
     private const val MAX_SHIFT_HALF = 100
     private const val STAR_COUNT = 60
     private const val PREVIEW_MAX = 1280
@@ -134,66 +134,72 @@ object Stacker {
         val ih = y1 - y0
         if (iw <= 0 || ih <= 0) return failure("The frames could not be overlapped. Try fewer frames or a steadier phone.")
 
-        // Pass 2: accumulate at full size (16-bit sums hold weights up to 257 of 8-bit values).
-        val acc = ShortArray(iw * ih * 3)
-        val pixels = IntArray(width * height)
+        // Pass 2: accumulate at full size. The sums live inside this function so the memory is
+        // freed as soon as the averaged pixels are returned.
         val usedRefs = mutableListOf<FrameRef>()
         var usedWeight = 0
-        for ((i, p) in placed.withIndex()) {
-            currentCoroutineContext().ensureActive()
-            onProgress("Stacking ${i + 1} of ${placed.size}", 0.3f + 0.6f * i / placed.size)
-            val bmp = decode(context, p.ref.location, 1)
-            if (bmp == null || bmp.width != width || bmp.height != height) {
-                bmp?.recycle()
-                rejected++
-                continue
-            }
-            bmp.getPixels(pixels, 0, width, 0, 0, width, height)
-            bmp.recycle()
-            val wgt = p.weight
-            for (oy in 0 until ih) {
-                val rowBase = (oy + y0 - p.sy) * width + (x0 - p.sx)
-                var d = oy * iw * 3
-                for (ox in 0 until iw) {
-                    val px = pixels[rowBase + ox]
-                    val r = (px shr 16) and 0xFF
-                    val g = (px shr 8) and 0xFF
-                    val b = px and 0xFF
-                    if (average) {
-                        acc[d] = ((acc[d].toInt() and 0xFFFF) + r * wgt).toShort()
-                        acc[d + 1] = ((acc[d + 1].toInt() and 0xFFFF) + g * wgt).toShort()
-                        acc[d + 2] = ((acc[d + 2].toInt() and 0xFFFF) + b * wgt).toShort()
-                    } else {
-                        if (r > (acc[d].toInt() and 0xFFFF)) acc[d] = r.toShort()
-                        if (g > (acc[d + 1].toInt() and 0xFFFF)) acc[d + 1] = g.toShort()
-                        if (b > (acc[d + 2].toInt() and 0xFFFF)) acc[d + 2] = b.toShort()
-                    }
-                    d += 3
+        suspend fun accumulate(): IntArray {
+            val acc = IntArray(iw * ih * 3)
+            val pixels = IntArray(width * height)
+            for ((i, p) in placed.withIndex()) {
+                currentCoroutineContext().ensureActive()
+                onProgress("Stacking ${i + 1} of ${placed.size}", 0.3f + 0.6f * i / placed.size)
+                val bmp = decode(context, p.ref.location, 1)
+                if (bmp == null || bmp.width != width || bmp.height != height) {
+                    bmp?.recycle()
+                    rejected++
+                    continue
                 }
+                bmp.getPixels(pixels, 0, width, 0, 0, width, height)
+                bmp.recycle()
+                val wgt = p.weight
+                for (oy in 0 until ih) {
+                    val rowBase = (oy + y0 - p.sy) * width + (x0 - p.sx)
+                    var d = oy * iw * 3
+                    for (ox in 0 until iw) {
+                        val px = pixels[rowBase + ox]
+                        val r = (px shr 16) and 0xFF
+                        val g = (px shr 8) and 0xFF
+                        val b = px and 0xFF
+                        if (average) {
+                            acc[d] += r * wgt
+                            acc[d + 1] += g * wgt
+                            acc[d + 2] += b * wgt
+                        } else {
+                            if (r > acc[d]) acc[d] = r
+                            if (g > acc[d + 1]) acc[d + 1] = g
+                            if (b > acc[d + 2]) acc[d + 2] = b
+                        }
+                        d += 3
+                    }
+                }
+                usedRefs += p.ref
+                usedWeight += wgt
             }
-            usedRefs += p.ref
-            usedWeight += wgt
-        }
-        if (usedRefs.isEmpty()) return failure("No frame could be read.")
+            if (usedRefs.isEmpty()) return IntArray(0)
 
-        onProgress("Finishing", 0.92f)
-        val out = IntArray(iw * ih)
-        for (i in out.indices) {
-            val d = i * 3
-            val r: Int
-            val g: Int
-            val b: Int
-            if (average) {
-                r = ((acc[d].toInt() and 0xFFFF) + usedWeight / 2) / usedWeight
-                g = ((acc[d + 1].toInt() and 0xFFFF) + usedWeight / 2) / usedWeight
-                b = ((acc[d + 2].toInt() and 0xFFFF) + usedWeight / 2) / usedWeight
-            } else {
-                r = acc[d].toInt() and 0xFFFF
-                g = acc[d + 1].toInt() and 0xFFFF
-                b = acc[d + 2].toInt() and 0xFFFF
+            onProgress("Finishing", 0.92f)
+            val result = IntArray(iw * ih)
+            for (i in result.indices) {
+                val d = i * 3
+                val r: Int
+                val g: Int
+                val b: Int
+                if (average) {
+                    r = (acc[d] + usedWeight / 2) / usedWeight
+                    g = (acc[d + 1] + usedWeight / 2) / usedWeight
+                    b = (acc[d + 2] + usedWeight / 2) / usedWeight
+                } else {
+                    r = acc[d]
+                    g = acc[d + 1]
+                    b = acc[d + 2]
+                }
+                result[i] = (0xFF shl 24) or (min(r, 255) shl 16) or (min(g, 255) shl 8) or min(b, 255)
             }
-            out[i] = (0xFF shl 24) or (min(r, 255) shl 16) or (min(g, 255) shl 8) or min(b, 255)
+            return result
         }
+        val out = accumulate()
+        if (usedRefs.isEmpty()) return failure("No frame could be read.")
 
         // One stretch, taken from the stack, is applied to the stack and to the single-frame preview.
         val lut = if (boost) buildLut(out, BOOST_GAMMA) else null

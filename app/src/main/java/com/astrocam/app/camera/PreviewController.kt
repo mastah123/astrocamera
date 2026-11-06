@@ -31,6 +31,7 @@ data class ManualSettings(
     val exposureNs: Long,
     val iso: Int,
     val focusDiopters: Float,
+    val autoFocus: Boolean = false,
 )
 
 /** What the camera says it used for a frame. */
@@ -69,8 +70,12 @@ private fun CaptureRequest.Builder.applyControls(s: ManualSettings) {
         set(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
         set(CaptureRequest.SENSOR_SENSITIVITY, s.iso)
         set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(s.exposureNs, 33_333_333L))
-        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-        set(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopters)
+        if (s.autoFocus) {
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        } else {
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            set(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopters)
+        }
     } else {
         set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)

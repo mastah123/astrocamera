@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-05
+
+### Added
+- Star Trails button on Home: opens the camera in star trails mode (manual, longest verified exposure, infinity focus, 100 or more frames, stacked every 20 frames, brightest pixels kept). A Trails toggle on the camera screen turns the mode on or off.
+- Frames, Timer and Stack are sliders like Exposure, ISO and Focus.
+- Frames go up to 1000, with an estimate of the storage they use.
+- Snapping ruler under every slider. Sliders move freely and only pull onto a marked position when the thumb is close, with a small tick of feedback.
+- AF button in the focus slider: continuous autofocus while exposure and ISO stay manual. The infinity button sits beside it.
+- The newest saved photo is shown next to the shutter when the camera opens.
+
+### Changed
+- The app opens on the camera, in Auto mode, with the controls hidden. Home is reached with Back.
+- The thumbnail beside the shutter opens the photo in the gallery instead of Stacking Studio. Stacking Studio is on Home.
+- Stack choice is a batch size: off, after the burst, or every N frames. Settings lists common sizes; the slider covers more.
+- Stacking uses integer sums so bursts above 257 frames cannot overflow, and handles up to 1200 inputs.
+
 ## [0.10.0] - 2026-11-05
 
 ### Added

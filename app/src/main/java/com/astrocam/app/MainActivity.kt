@@ -59,7 +59,9 @@ private fun AstroApp() {
         settings = it
         SettingsStore.save(context, it)
     }
-    var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+    // The app opens straight on the camera. Home is one tap back.
+    var screen by rememberSaveable { mutableStateOf(Screen.Astro) }
+    var trailsStart by rememberSaveable { mutableStateOf(false) }
 
     AstroTheme(if (settings.redMode) NightTheme.Red else NightTheme.Dark) {
         BackHandler(enabled = screen != Screen.Home) {
@@ -69,18 +71,21 @@ private fun AstroApp() {
             Screen.Home -> HomeScreen(
                 cameras = cameras,
                 profile = profile,
-                onOpenAstro = { screen = Screen.Astro },
+                onOpenAstro = { trailsStart = false; screen = Screen.Astro },
+                onOpenTrails = { trailsStart = true; screen = Screen.Astro },
                 onOpenStack = { screen = Screen.Stack },
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
-            Screen.Astro -> AstroScreen(
-                limits = limitsForControls,
-                settings = settings,
-                onSettings = updateSettings,
-                onOpenStack = { screen = Screen.Stack },
-                onBack = { screen = Screen.Home },
-            )
+            Screen.Astro -> androidx.compose.runtime.key(trailsStart) {
+                AstroScreen(
+                    limits = limitsForControls,
+                    settings = settings,
+                    onSettings = updateSettings,
+                    startInTrails = trailsStart,
+                    onBack = { screen = Screen.Home },
+                )
+            }
             Screen.Stack -> StackScreen(settings = settings, onBack = { screen = Screen.Home })
             Screen.Tester -> TesterScreen(cameras = cameras, profile = profile, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(

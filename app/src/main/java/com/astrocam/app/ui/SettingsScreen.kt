@@ -34,7 +34,7 @@ import com.astrocam.app.camera.CrashLog
 import com.astrocam.app.camera.DeviceProfile
 import com.astrocam.app.camera.OriginalsPolicy
 import com.astrocam.app.camera.StackMode
-import com.astrocam.app.camera.StackWhile
+import com.astrocam.app.camera.StackPlan
 import com.astrocam.app.camera.TempPreset
 import com.astrocam.app.camera.Thermal
 import com.astrocam.app.camera.appBuild
@@ -95,17 +95,23 @@ fun SettingsScreen(
 
             SectionTitle("Stack while capturing")
             SettingsCard {
-                StackWhile.values().forEach { option ->
+                Text("Current: ${StackPlan.label(settings.stackBatch)}", color = colors.onSurfaceVariant)
+                StackPlan.presets.forEach { batch ->
                     OptionRow(
-                        selected = settings.stackWhile == option,
-                        title = option.label,
-                        detail = when (option) {
-                            StackWhile.Off -> "Frames are only saved"
-                            StackWhile.AfterBurst -> "Stack once, after the last frame"
+                        selected = settings.stackBatch == batch,
+                        title = StackPlan.label(batch),
+                        detail = when {
+                            batch < 0 -> "Frames are only saved"
+                            batch == 0 -> "Stack once, after the last frame"
                             else -> "Stack each batch, then keep shooting. Batches are combined at the end"
                         },
-                    ) { onSettings(settings.copy(stackWhile = option)) }
+                    ) { onSettings(settings.copy(stackBatch = batch)) }
                 }
+                Text(
+                    "Other batch sizes are on the camera screen's STACK slider.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                )
                 Text("Method", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                 StackMode.values().forEach { m ->
                     OptionRow(settings.autoMethod == m, m.label, m.hint) { onSettings(settings.copy(autoMethod = m)) }

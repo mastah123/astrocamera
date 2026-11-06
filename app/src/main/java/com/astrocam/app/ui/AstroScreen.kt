@@ -34,7 +34,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -72,9 +71,11 @@ import com.astrocam.app.camera.ManualSettings
 import com.astrocam.app.camera.Originals
 import com.astrocam.app.camera.OriginalsPolicy
 import com.astrocam.app.camera.PreviewController
+import com.astrocam.app.camera.RecentCapture
 import com.astrocam.app.camera.SessionInfo
+import com.astrocam.app.camera.StackMode
+import com.astrocam.app.camera.StackPlan
 import com.astrocam.app.camera.StackResult
-import com.astrocam.app.camera.StackWhile
 import com.astrocam.app.camera.Stacker
 import com.astrocam.app.camera.Thermal
 import com.astrocam.app.camera.ThermalLevel
@@ -85,6 +86,11 @@ import com.astrocam.app.camera.isoFraction
 import com.astrocam.app.camera.previewConfig
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -92,16 +98,69 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-private enum class Control { Exposure, Iso, Focus }
+private enum class Control { Exposure, Iso, Focus, Frames, Timer, Stack }
 
-private val TIMER_CHOICES = listOf(0, 2, 5, 10)
-private val FRAME_CHOICES = listOf(1, 5, 10, 20, 50, 100)
+private val Control.isSetting get() = this == Control.Frames || this == Control.Timer || this == Control.Stack
+
+private const val MAX_FRAMES_UI = 1000
+private const val MAX_TIMER = 30
+private val FRAME_SNAPS = listOf(1, 5, 10, 20, 50, 100, 200, 500, 1000)
+private val TIMER_SNAPS = listOf(0, 2, 5, 10, 20, 30)
+private val STACK_STOPS = listOf(-1, 0, 3, 5, 10, 20, 50, 100, 200)
+
+private val EXPOSURE_STOPS = listOf(
+    1_000_000L to "1/1000", 4_000_000L to "1/250", 16_666_667L to "1/60", 33_333_333L to "1/30",
+    66_666_667L to "1/15", 125_000_000L to "1/8", 250_000_000L to "1/4", 500_000_000L to "1/2",
+    1_000_000_000L to "1s", 2_000_000_000L to "2s", 4_000_000_000L to "4s", 8_000_000_000L to "8s",
+    15_000_000_000L to "15s", 30_000_000_000L to "30s",
+)
+private val ISO_STOPS = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800)
+private val FOCUS_STOPS = listOf(0f to "∞", 0.33f to "3m", 1f to "1m", 2f to "50cm", 4f to "25cm")
+
+private fun framesFrac(n: Int) = (ln(n.coerceIn(1, MAX_FRAMES_UI).toDouble()) / ln(MAX_FRAMES_UI.toDouble())).toFloat()
+private fun framesAt(f: Float) =
+    exp(f.coerceIn(0f, 1f) * ln(MAX_FRAMES_UI.toDouble())).roundToInt().coerceIn(1, MAX_FRAMES_UI)
+private fun timerFrac(s: Int) = s / MAX_TIMER.toFloat()
+private fun timerAt(f: Float) = (f.coerceIn(0f, 1f) * MAX_TIMER).roundToInt()
+private fun stackIndex(batch: Int) = STACK_STOPS.indices.minByOrNull { abs(STACK_STOPS[it] - batch) } ?: 0
+private fun stackFrac(batch: Int) = stackIndex(batch) / (STACK_STOPS.size - 1).toFloat()
+private fun stackAt(f: Float) = STACK_STOPS[(f.coerceIn(0f, 1f) * (STACK_STOPS.size - 1)).roundToInt()]
+
+/** Keeps ruler labels from overlapping by dropping marks that sit too close to the previous one. */
+private fun thin(snaps: List<Snap>, gap: Float = 0.09f): List<Snap> {
+    val kept = mutableListOf<Snap>()
+    snaps.sortedBy { it.frac }.forEach { s -> if (kept.isEmpty() || s.frac - kept.last().frac >= gap) kept += s }
+    return kept
+}
+
+private fun exposureSnaps(limits: ControlLimits): List<Snap> {
+    if (limits.maxExposureNs <= limits.minExposureNs) return emptyList()
+    val lo = ln(limits.minExposureNs.toDouble())
+    val hi = ln(limits.maxExposureNs.toDouble())
+    val marks = EXPOSURE_STOPS.filter { it.first in limits.minExposureNs..limits.maxExposureNs }
+        .map { Snap(((ln(it.first.toDouble()) - lo) / (hi - lo)).toFloat(), it.second) }
+    return thin(marks + Snap(1f, formatExposure(limits.maxExposureNs).replace(" ", "")))
+}
+
+private fun isoSnaps(limits: ControlLimits): List<Snap> {
+    val marks = ISO_STOPS.filter { it in limits.isoMin..limits.isoMax }.map { Snap(limits.isoFraction(it), it.toString()) }
+    return thin(marks + Snap(1f, limits.isoMax.toString()))
+}
+
+private fun focusSnaps(limits: ControlLimits): List<Snap> {
+    if (limits.minFocusDiopters <= 0f) return emptyList()
+    return thin(FOCUS_STOPS.filter { it.first <= limits.minFocusDiopters }.map { Snap(it.first / limits.minFocusDiopters, it.second) })
+}
 
 private fun formatTotal(ns: Long): String {
     val seconds = ns / 1e9
     return if (seconds < 60) "%.1f s".format(Locale.US, seconds) else "%.1f min".format(Locale.US, seconds / 60)
 }
+
+private fun formatStorage(megabytes: Double): String =
+    if (megabytes >= 1000) "%.1f GB".format(Locale.US, megabytes / 1000) else "%.0f MB".format(Locale.US, megabytes)
 
 private fun vibrate(context: Context) {
     runCatching {
@@ -122,7 +181,7 @@ fun AstroScreen(
     limits: ControlLimits?,
     settings: AppSettings,
     onSettings: (AppSettings) -> Unit,
-    onOpenStack: () -> Unit,
+    startInTrails: Boolean,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -133,7 +192,7 @@ fun AstroScreen(
                 Text("No rear camera was found on this device.")
             }
         } else {
-            AstroContent(limits, settings, onSettings, onOpenStack, onBack, Modifier.padding(padding))
+            AstroContent(limits, settings, onSettings, startInTrails, onBack, Modifier.padding(padding))
         }
     }
 }
@@ -143,7 +202,7 @@ private fun AstroContent(
     limits: ControlLimits,
     settings: AppSettings,
     onSettings: (AppSettings) -> Unit,
-    onOpenStack: () -> Unit,
+    startInTrails: Boolean,
     onBack: () -> Unit,
     modifier: Modifier,
 ) {
@@ -172,12 +231,15 @@ private fun AstroContent(
     var error by remember { mutableStateOf<String?>(null) }
     var canCapture by remember { mutableStateOf(false) }
 
-    var manual by remember { mutableStateOf(limits.manualAvailable) }
+    // The camera opens in Auto. Manual controls are one tap away.
+    var manual by remember { mutableStateOf(false) }
     var active by remember { mutableStateOf(Control.Exposure) }
-    var panelOpen by remember { mutableStateOf(true) }
+    var panelOpen by remember { mutableStateOf(false) }
     var exposureFrac by remember { mutableStateOf(1f) }
     var isoFrac by remember { mutableStateOf(limits.isoFraction(800)) }
     var focusFrac by remember { mutableStateOf(0f) }
+    var autoFocus by remember { mutableStateOf(false) }
+    var trails by remember { mutableStateOf(startInTrails) }
 
     var countdown by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
@@ -188,6 +250,7 @@ private fun AstroContent(
     var frameTotal by remember { mutableStateOf(1) }
     var savedCount by remember { mutableStateOf(0) }
     var lastThumb by remember { mutableStateOf<Bitmap?>(null) }
+    var lastLocation by remember { mutableStateOf<String?>(null) }
     var askDialog by remember { mutableStateOf(false) }
     var tempDialog by remember { mutableStateOf(false) }
     var resumePrompt by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
@@ -200,9 +263,48 @@ private fun AstroContent(
         exposureNs = limits.exposureAt(exposureFrac),
         iso = limits.isoAt(isoFrac),
         focusDiopters = focusFrac * limits.minFocusDiopters,
+        autoFocus = autoFocus,
     )
     val latestManual by rememberUpdatedState(ms)
     val latestSettings by rememberUpdatedState(settings)
+    val latestTrails by rememberUpdatedState(trails)
+
+    val exposureSnaps = remember(limits) { exposureSnaps(limits) }
+    val isoSnaps = remember(limits) { isoSnaps(limits) }
+    val focusSnaps = remember(limits) { focusSnaps(limits) }
+    val frameSnaps = remember { thin(FRAME_SNAPS.map { Snap(framesFrac(it), it.toString()) }, 0.08f) }
+    val timerSnaps = remember { TIMER_SNAPS.map { Snap(timerFrac(it), if (it == 0) "Off" else "${it}s") } }
+    val stackSnaps = remember {
+        STACK_STOPS.map {
+            Snap(stackFrac(it), when { it < 0 -> "Off"; it == 0 -> "After"; else -> it.toString() })
+        }
+    }
+
+    // Star trails: many frames at the longest exposure, brightest pixels kept.
+    fun enterTrails() {
+        if (limits.manualAvailable) manual = true
+        exposureFrac = 1f
+        isoFrac = limits.isoFraction(800)
+        focusFrac = 0f
+        autoFocus = false
+        active = Control.Frames
+        panelOpen = true
+        onSettings(
+            settings.copy(
+                frameCount = max(settings.frameCount, 100),
+                stackBatch = if (settings.stackBatch < 0) 20 else settings.stackBatch,
+            )
+        )
+    }
+    LaunchedEffect(Unit) {
+        if (startInTrails) enterTrails()
+        // Show the newest photo next to the shutter when the camera opens.
+        val recent = withContext(Dispatchers.IO) { RecentCapture.latest(context) }
+        if (recent != null && lastThumb == null) {
+            lastThumb = recent.thumb
+            lastLocation = recent.uri
+        }
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -256,7 +358,8 @@ private fun AstroContent(
                 // Every frame uses the same settings, taken when the sequence starts.
                 val used = latestManual
                 val total = app.frameCount
-                val mode = if (total > 1) app.stackWhile else StackWhile.Off
+                val batch = if (total > 1) app.stackBatch else -1
+                val method = if (latestTrails) StackMode.Trails else app.autoMethod
                 val session = if (total > 1) CaptureStore.newSession() else null
                 val minimal = total > 1 && used.manual
                 val savedFrames = mutableListOf<FrameRef>()
@@ -275,6 +378,7 @@ private fun AstroContent(
                         savedCount++
                         savedFrames += ref
                         batchFrames += ref
+                        lastLocation = ref.location
                     }
                 }
 
@@ -292,7 +396,7 @@ private fun AstroContent(
                         "${session}_B%02d".format(Locale.US, batchNo), refs, used.exposureNs, used.iso, used.manual,
                     )
                     val r = try {
-                        Stacker.stack(context, info, app.autoMethod, false, folder = "AstroCamera/STACKED/BATCHES", previews = false) { _, _ -> }
+                        Stacker.stack(context, info, method, false, folder = "AstroCamera/STACKED/BATCHES", previews = false) { _, _ -> }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -363,7 +467,7 @@ private fun AstroContent(
                             ?.let { FrameRef(it.name, it.location, i) }
                     })
                     if (pending.size >= 3) reap()
-                    if (mode.batch > 0 && i % mode.batch == 0) {
+                    if (batch > 0 && i % batch == 0) {
                         drain()
                         stackBatch()
                     }
@@ -371,19 +475,19 @@ private fun AstroContent(
                 drain()
 
                 var finalResult: StackResult? = null
-                if (mode != StackWhile.Off && savedFrames.isNotEmpty() && session != null) {
+                if (batch >= 0 && savedFrames.isNotEmpty() && session != null) {
                     try {
-                        if (mode == StackWhile.AfterBurst) {
+                        if (batch == 0) {
                             phase = "Stacking ${savedFrames.size} frames…"
                             val info = SessionInfo(session, savedFrames.toList(), used.exposureNs, used.iso, used.manual)
-                            finalResult = Stacker.stack(context, info, app.autoMethod, app.boost) { label, _ -> phase = label }
+                            finalResult = Stacker.stack(context, info, method, app.boost) { label, _ -> phase = label }
                         } else {
                             stackBatch()
                             if (batchImages.isNotEmpty()) {
                                 phase = "Combining ${batchImages.size} batches…"
                                 val info = SessionInfo(session, batchImages.toList(), used.exposureNs, used.iso, used.manual)
                                 finalResult = Stacker.stack(
-                                    context, info, app.autoMethod, app.boost, weights = batchWeights.toList(),
+                                    context, info, method, app.boost, weights = batchWeights.toList(),
                                 ) { label, _ -> phase = label }
                             }
                         }
@@ -397,7 +501,10 @@ private fun AstroContent(
                 if (result != null && result.verified && deleteOriginals) {
                     deleted += Originals.delete(context, result.usedRefs)
                 }
-                result?.stacked?.let { lastThumb = it }
+                if (result != null && result.verified) {
+                    result.stacked?.let { lastThumb = it }
+                    result.savedLocation?.let { lastLocation = it }
+                }
 
                 status = buildString {
                     stopReason?.let { append(it).append(' ') }
@@ -409,7 +516,7 @@ private fun AstroContent(
                             append("Stacked ${result.used} frames into ${result.savedName}.")
                             if (deleted > 0) append(" Deleted $deleted originals.")
                         }
-                        mode != StackWhile.Off -> append("Stacking did not finish, so the originals were kept.")
+                        batch >= 0 -> append("Stacking did not finish, so the originals were kept.")
                         else -> append("Saved $savedCount of $total frames to Pictures/AstroCamera/$session")
                     }
                     if (batchFailed > 0) append(" $batchFailed batch(es) could not be stacked; their frames were kept.")
@@ -423,14 +530,22 @@ private fun AstroContent(
         }
     }
 
-    val focusText = if (focusFrac < 0.01f) "∞"
-    else "%.0f cm".format(Locale.US, 100f / (focusFrac * limits.minFocusDiopters))
+    val focusText = when {
+        autoFocus -> "AF"
+        focusFrac < 0.01f -> "∞"
+        else -> "%.0f cm".format(Locale.US, 100f / (focusFrac * limits.minFocusDiopters))
+    }
     val exposureText = formatExposure(ms.exposureNs)
-    val readout = if (ms.manual) "$exposureText · ISO ${ms.iso}" + (if (limits.manualFocus) " · $focusText" else "") else "Auto"
+    val readout = (if (trails) "★ " else "") +
+        if (ms.manual) "$exposureText · ISO ${ms.iso}" + (if (limits.manualFocus) " · $focusText" else "") else "Auto"
     val burst = busy && frameTotal > 1 && countdown == 0
+    val showPanel = panelOpen && (active.isSetting || (ms.manual && (active != Control.Focus || limits.manualFocus)))
+    val megapixels = config?.jpegSize?.let { it.width * it.height / 1e6 } ?: 8.0
+    val storageText = formatStorage(settings.frameCount * megapixels * 0.4)
+    val totalText = formatTotal(ms.exposureNs * settings.frameCount)
 
     Column(modifier = modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        // Top bar: back, current settings, heat.
+        // Top bar: back, current settings, star trails, heat.
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -438,6 +553,10 @@ private fun AstroContent(
             TextButton(onClick = onBack, enabled = !busy) { Text("‹ Back") }
             Text(readout, modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium)
+            TextButton(
+                onClick = { if (trails) trails = false else { trails = true; enterTrails() } },
+                enabled = !busy,
+            ) { Text(if (trails) "★ Trails" else "☆ Trails") }
             TempChip(thermal, level) { tempDialog = true }
             Spacer(Modifier.width(8.dp))
         }
@@ -464,19 +583,50 @@ private fun AstroContent(
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
-                if (ms.manual && panelOpen) {
-                    SliderPanel(
-                        limits = limits,
-                        ms = ms,
-                        active = active,
-                        exposureFrac = exposureFrac,
-                        onExposure = { exposureFrac = it },
-                        isoFrac = isoFrac,
-                        onIso = { isoFrac = it },
-                        focusFrac = focusFrac,
-                        onFocus = { focusFrac = it },
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
+                if (showPanel) {
+                    val at = Modifier.align(Alignment.BottomCenter)
+                    when (active) {
+                        Control.Exposure -> SliderPanel(
+                            "Exposure", exposureText, exposureFrac, { exposureFrac = it }, exposureSnaps,
+                            if (limits.exposureVerified) "Verified max ${formatExposure(limits.maxExposureNs)}"
+                            else "Unverified max ${formatExposure(limits.maxExposureNs)}. Run the Long Exposure Test.",
+                            at,
+                        )
+                        Control.Iso -> SliderPanel(
+                            "ISO", ms.iso.toString(), isoFrac, { isoFrac = it }, isoSnaps,
+                            "Range as reported by the phone", at,
+                        )
+                        Control.Focus -> SliderPanel(
+                            "Focus", focusText, focusFrac, { focusFrac = it; autoFocus = false }, focusSnaps,
+                            "Reported by the phone, not yet verified. Left end is infinity.", at,
+                            extra = {
+                                TextButton(onClick = { autoFocus = true }) { Text(if (autoFocus) "● AF" else "AF") }
+                                TextButton(onClick = { autoFocus = false; focusFrac = 0f }) { Text("∞") }
+                            },
+                        )
+                        Control.Frames -> SliderPanel(
+                            "Frames", "${settings.frameCount}", framesFrac(settings.frameCount),
+                            { onSettings(settings.copy(frameCount = framesAt(it))) }, frameSnaps,
+                            if (ms.manual) "${settings.frameCount} × $exposureText = $totalText · about $storageText if all kept"
+                            else "About $storageText if all frames are kept",
+                            at,
+                        )
+                        Control.Timer -> SliderPanel(
+                            "Timer", if (settings.timerSeconds == 0) "Off" else "${settings.timerSeconds} s",
+                            timerFrac(settings.timerSeconds), { onSettings(settings.copy(timerSeconds = timerAt(it))) },
+                            timerSnaps, "Delay before the first frame", at,
+                        )
+                        Control.Stack -> SliderPanel(
+                            "Stack", StackPlan.label(settings.stackBatch), stackFrac(settings.stackBatch),
+                            { onSettings(settings.copy(stackBatch = stackAt(it))) }, stackSnaps,
+                            when {
+                                settings.stackBatch < 0 -> "Frames are saved without stacking"
+                                settings.stackBatch == 0 -> "Stacks once, after the last frame"
+                                else -> "Stacks every ${settings.stackBatch} frames, then combines the batches"
+                            },
+                            at,
+                        )
+                    }
                 }
                 if (countdown > 0) {
                     Text(countdown.toString(), style = MaterialTheme.typography.displayLarge,
@@ -487,7 +637,7 @@ private fun AstroContent(
             Text("No usable preview size for this camera.", color = colors.error, modifier = Modifier.padding(20.dp))
         }
 
-        // One strip of settings. The first three open a slider; the rest cycle on tap.
+        // One strip of settings. Each chip opens its slider over the preview.
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -500,32 +650,26 @@ private fun AstroContent(
                     panelOpen = true
                 }
             }
-            StripChip("EXP", if (ms.manual) exposureText else "Auto", ms.manual && panelOpen && active == Control.Exposure,
+            StripChip("EXP", if (ms.manual) exposureText else "Auto", showPanel && active == Control.Exposure,
                 ms.manual && !busy, Modifier.weight(1f)) { open(Control.Exposure) }
-            StripChip("ISO", if (ms.manual) ms.iso.toString() else "Auto", ms.manual && panelOpen && active == Control.Iso,
+            StripChip("ISO", if (ms.manual) ms.iso.toString() else "Auto", showPanel && active == Control.Iso,
                 ms.manual && !busy, Modifier.weight(1f)) { open(Control.Iso) }
-            StripChip("FOCUS", if (ms.manual && limits.manualFocus) focusText else "Auto",
-                ms.manual && panelOpen && active == Control.Focus,
+            StripChip("FOCUS", if (ms.manual && limits.manualFocus) focusText else "Auto", showPanel && active == Control.Focus,
                 ms.manual && limits.manualFocus && !busy, Modifier.weight(1f)) { open(Control.Focus) }
-            StripChip("FRAMES", settings.frameCount.toString(), settings.frameCount > 1, !busy, Modifier.weight(1f)) {
-                onSettings(settings.copy(frameCount = FRAME_CHOICES[(FRAME_CHOICES.indexOf(settings.frameCount) + 1) % FRAME_CHOICES.size]))
-            }
-            StripChip("TIMER", if (settings.timerSeconds == 0) "Off" else "${settings.timerSeconds}s", settings.timerSeconds > 0,
-                !busy, Modifier.weight(1f)) {
-                onSettings(settings.copy(timerSeconds = TIMER_CHOICES[(TIMER_CHOICES.indexOf(settings.timerSeconds) + 1) % TIMER_CHOICES.size]))
-            }
-            StripChip("STACK", settings.stackWhile.short, settings.stackWhile != StackWhile.Off, !busy, Modifier.weight(1f)) {
-                val all = StackWhile.values()
-                onSettings(settings.copy(stackWhile = all[(settings.stackWhile.ordinal + 1) % all.size]))
-            }
+            StripChip("FRAMES", settings.frameCount.toString(), showPanel && active == Control.Frames,
+                !busy, Modifier.weight(1f)) { open(Control.Frames) }
+            StripChip("TIMER", if (settings.timerSeconds == 0) "Off" else "${settings.timerSeconds}s",
+                showPanel && active == Control.Timer, !busy, Modifier.weight(1f)) { open(Control.Timer) }
+            StripChip("STACK", StackPlan.short(settings.stackBatch), showPanel && active == Control.Stack,
+                !busy, Modifier.weight(1f)) { open(Control.Stack) }
         }
 
-        // Status line and progress.
+        // Status line.
         val info = buildString {
             reading?.let { append("Camera: ${it.exposureNs?.let(::formatExposure) ?: "n/a"} · ISO ${it.iso ?: "n/a"}") }
             if (settings.frameCount > 1 && ms.manual) {
                 if (isNotEmpty()) append(" · ")
-                append("${settings.frameCount} × $exposureText = ${formatTotal(ms.exposureNs * settings.frameCount)}")
+                append("${settings.frameCount} × $exposureText = $totalText")
             }
         }
         Text(
@@ -551,7 +695,7 @@ private fun AstroContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Thumbnail(lastThumb, onOpenStack)
+            Thumbnail(lastThumb) { lastLocation?.let { RecentCapture.open(context, it) } }
             Shutter(
                 enabled = (canCapture && !busy) || busy,
                 label = when {
@@ -566,7 +710,7 @@ private fun AstroContent(
                         countdown > 0 -> { job?.cancel(); status = "Timer cancelled" }
                         busy -> { job?.cancel(); status = "Stopped. Frames already saved were kept." }
                         else -> {
-                            val needsAsk = settings.frameCount > 1 && settings.stackWhile != StackWhile.Off &&
+                            val needsAsk = settings.frameCount > 1 && settings.stackBatch >= 0 &&
                                 settings.originals == OriginalsPolicy.Ask
                             if (needsAsk) askDialog = true else shoot(settings.originals == OriginalsPolicy.Delete)
                         }
@@ -620,50 +764,27 @@ private fun AstroContent(
 
 @Composable
 private fun SliderPanel(
-    limits: ControlLimits,
-    ms: ManualSettings,
-    active: Control,
-    exposureFrac: Float,
-    onExposure: (Float) -> Unit,
-    isoFrac: Float,
-    onIso: (Float) -> Unit,
-    focusFrac: Float,
-    onFocus: (Float) -> Unit,
+    title: String,
+    valueText: String,
+    frac: Float,
+    onFrac: (Float) -> Unit,
+    snaps: List<Snap>,
+    hint: String,
     modifier: Modifier,
+    extra: @Composable () -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
-    val shown = if (active == Control.Focus && !limits.manualFocus) Control.Exposure else active
-    val name: String
-    val value: String
-    val frac: Float
-    val onChange: (Float) -> Unit
-    val hint: String
-    when (shown) {
-        Control.Exposure -> {
-            name = "Exposure"; value = formatExposure(ms.exposureNs); frac = exposureFrac; onChange = onExposure
-            hint = if (limits.exposureVerified) "Verified max ${formatExposure(limits.maxExposureNs)}"
-            else "Unverified max ${formatExposure(limits.maxExposureNs)}. Run the Long Exposure Test."
-        }
-        Control.Iso -> {
-            name = "ISO"; value = ms.iso.toString(); frac = isoFrac; onChange = onIso
-            hint = "Range as reported by the phone"
-        }
-        Control.Focus -> {
-            name = "Focus"
-            value = if (focusFrac < 0.01f) "∞" else "%.0f cm".format(Locale.US, 100f / (focusFrac * limits.minFocusDiopters))
-            frac = focusFrac; onChange = onFocus
-            hint = "Reported by the phone, not yet verified. Drag fully left for infinity."
-        }
-    }
     Column(
-        modifier = modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.6f))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+        modifier = modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.65f))
+            .padding(horizontal = 14.dp, vertical = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(name, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
-            Text(value, color = colors.onBackground, fontWeight = FontWeight.SemiBold)
+            Text(title, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+            extra()
+            Text(valueText, color = colors.onBackground, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 8.dp))
         }
-        Slider(value = frac, onValueChange = onChange)
+        SnapSlider(value = frac, onValueChange = onFrac, snaps = snaps)
         Text(hint, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
     }
 }

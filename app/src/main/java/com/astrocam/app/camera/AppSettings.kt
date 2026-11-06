@@ -9,13 +9,21 @@ enum class OriginalsPolicy(val label: String, val detail: String) {
     Delete("Always delete", "Originals are deleted after the stacked image is saved and checked"),
 }
 
-/** When frames of a burst are stacked. Batch 0 means once, after the last frame. */
-enum class StackWhile(val label: String, val short: String, val batch: Int) {
-    Off("Off", "Off", -1),
-    AfterBurst("After the burst", "After", 0),
-    Every5("Every 5 frames", "Every 5", 5),
-    Every10("Every 10 frames", "Every 10", 10),
-    Every20("Every 20 frames", "Every 20", 20),
+/** When frames of a burst are stacked: -1 never, 0 once after the last frame, N every N frames. */
+object StackPlan {
+    val presets = listOf(-1, 0, 5, 10, 20)
+
+    fun label(batch: Int): String = when {
+        batch < 0 -> "Off"
+        batch == 0 -> "After the burst"
+        else -> "Every $batch frames"
+    }
+
+    fun short(batch: Int): String = when {
+        batch < 0 -> "Off"
+        batch == 0 -> "After"
+        else -> "Each $batch"
+    }
 }
 
 enum class TempPreset(val label: String, val warm: Float, val hot: Float, val stop: Float) {
@@ -28,7 +36,7 @@ data class AppSettings(
     val redMode: Boolean = false,
     val frameCount: Int = 1,
     val timerSeconds: Int = 0,
-    val stackWhile: StackWhile = StackWhile.Off,
+    val stackBatch: Int = -1,
     val autoMethod: StackMode = StackMode.Average,
     val originals: OriginalsPolicy = OriginalsPolicy.Ask,
     val boost: Boolean = true,
@@ -49,7 +57,7 @@ object SettingsStore {
             redMode = p.getBoolean("red_mode", d.redMode),
             frameCount = p.getInt("frame_count", d.frameCount),
             timerSeconds = p.getInt("timer_seconds", d.timerSeconds),
-            stackWhile = p.enum("stack_while", d.stackWhile),
+            stackBatch = p.getInt("stack_batch", d.stackBatch),
             autoMethod = p.enum("auto_method", d.autoMethod),
             originals = p.enum("originals", d.originals),
             boost = p.getBoolean("boost", d.boost),
@@ -63,7 +71,7 @@ object SettingsStore {
             .putBoolean("red_mode", s.redMode)
             .putInt("frame_count", s.frameCount)
             .putInt("timer_seconds", s.timerSeconds)
-            .putString("stack_while", s.stackWhile.name)
+            .putInt("stack_batch", s.stackBatch)
             .putString("auto_method", s.autoMethod.name)
             .putString("originals", s.originals.name)
             .putBoolean("boost", s.boost)
