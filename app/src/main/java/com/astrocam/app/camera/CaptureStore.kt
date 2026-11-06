@@ -11,6 +11,8 @@ import java.util.Date
 import java.util.Locale
 import org.json.JSONObject
 
+class Saved(val name: String, val location: String)
+
 /** Saves photos to the gallery and keeps a private log of the settings used for each one. */
 object CaptureStore {
 
@@ -25,7 +27,7 @@ object CaptureStore {
     /** A folder name that groups the frames of one multi-frame capture. */
     fun newSession(): String = "SESSION_${stamp()}"
 
-    /** Returns the saved file name, or null if saving failed. */
+    /** Returns where the photo was saved, or null if saving failed. */
     fun save(
         context: Context,
         jpeg: ByteArray,
@@ -35,7 +37,8 @@ object CaptureStore {
         session: String? = null,
         frame: Int = 0,
         total: Int = 1,
-    ): String? {
+        thermal: ThermalReading? = null,
+    ): Saved? {
         val time = session?.removePrefix("SESSION_") ?: stamp()
         val frameTag = if (session != null) "_F%03d".format(Locale.US, frame) else ""
         val tag = if (settings.manual) "${exposureTag(settings.exposureNs)}_ISO${settings.iso}" else "auto"
@@ -43,8 +46,8 @@ object CaptureStore {
         val folder = if (session != null) "AstroCamera/$session" else "AstroCamera"
         val location = runCatching { write(context, jpeg, name, "image/jpeg", folder) }.getOrNull()
             ?: return null
-        runCatching { appendLog(context, name, location, settings, reading, cameraId, session, frame, total) }
-        return name
+        runCatching { appendLog(context, name, location, settings, reading, cameraId, session, frame, total, thermal) }
+        return Saved(name, location)
     }
 
     /** Saves a DNG from the RAW test. Returns the file name, or null if saving failed. */
@@ -54,9 +57,11 @@ object CaptureStore {
             .getOrNull()?.let { name }
     }
 
-    /** Saves a stacked image. Returns the file name, or null if saving failed. */
-    fun saveStacked(context: Context, jpeg: ByteArray, name: String): String? =
-        runCatching { write(context, jpeg, name, "image/jpeg", "AstroCamera/STACKED") }.getOrNull()?.let { name }
+    /** Saves a stacked image. */
+    fun saveStacked(context: Context, jpeg: ByteArray, name: String, folder: String): Saved? {
+        val location = runCatching { write(context, jpeg, name, "image/jpeg", folder) }.getOrNull() ?: return null
+        return Saved(name, location)
+    }
 
     private fun write(context: Context, bytes: ByteArray, name: String, mime: String, folder: String): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -96,6 +101,7 @@ object CaptureStore {
         session: String?,
         frame: Int,
         total: Int,
+        thermal: ThermalReading?,
     ) {
         val line = JSONObject().apply {
             put("name", name)
@@ -113,6 +119,8 @@ object CaptureStore {
             put("reportedExposureNs", r.exposureNs ?: JSONObject.NULL)
             put("reportedIso", r.iso ?: JSONObject.NULL)
             put("reportedFrameNs", r.frameNs ?: JSONObject.NULL)
+            put("batteryTempC", thermal?.batteryC?.toDouble() ?: JSONObject.NULL)
+            put("thermalStatus", thermal?.status ?: JSONObject.NULL)
         }
         File(context.filesDir, "captures.jsonl").appendText(line.toString() + "\n")
     }

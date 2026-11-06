@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-05
+
+### Added
+- Stack while capturing: off, after the burst, or every 5, 10 or 20 frames. Each batch is stacked, then capturing continues, and the batches are combined at the end, weighted by frame count.
+- Original frames after stacking: ask each time, always keep, or always delete. Originals are deleted only after the stacked image has been saved and read back successfully; frames that could not be used are kept.
+- Temperature meter on the camera screen (battery temperature, with a charging mark) and a details dialog.
+- Temperature protection with Cautious, Normal and Relaxed presets: warns when warm, pauses and vibrates when hot, stops the burst when too hot, and asks before resuming after cooling.
+- Battery temperature and thermal status recorded for every frame in the capture log, and in the shared compatibility report.
+- Diagnostics in Settings: live temperature and thermal readout, plus Share last crash and Clear.
+- Crash and error log kept on the device.
+- Settings are remembered: red mode, frame count, timer and stacking choices.
+- Camera-style screen: slim top readout, preview with the open slider over it, one chip strip, then thumbnail, shutter with a progress ring, and Manual/Auto. The thumbnail opens Stacking Studio.
+
+### Fixed
+- App closed when Medium or Strong brightness boost was chosen. The single-frame comparison image was edited in place although Android decodes it as read-only.
+- Stacking errors now show a message instead of closing the app.
+
+### Changed
+- Brightness boost is a single On or Off switch.
+- Stacking Studio follows the original-frames setting after a manual stack.
+
 ## [0.9.0] - 2026-11-05
 
 ### Added

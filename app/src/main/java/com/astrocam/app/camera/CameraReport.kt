@@ -90,10 +90,14 @@ fun buildReport(
     device: String,
     cameras: List<CameraInfo>,
     profile: DeviceProfile? = null,
+    thermal: ThermalReading? = null,
 ): String = buildString {
     appendLine("Astro Camera - Compatibility Report")
     appendLine("Device: $device")
     appendLine("Readiness: ${assessReadiness(cameras).title}")
+    thermal?.let {
+        appendLine("Battery temperature: ${Thermal.tempText(it)}, thermal status: ${Thermal.statusName(it.status)}")
+    }
     cameras.forEach { camera ->
         appendLine()
         appendLine("Camera ${camera.id} (${camera.facing})")

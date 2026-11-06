@@ -16,8 +16,8 @@ android {
         applicationId = "com.astrocam.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.9.0"
+        versionCode = 13
+        versionName = "0.10.0"
     }
 
     signingConfigs {

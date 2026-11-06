@@ -12,8 +12,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.astrocam.app.camera.AppSettings
 import com.astrocam.app.camera.CameraDetector
+import com.astrocam.app.camera.CrashLog
 import com.astrocam.app.camera.ProfileStore
+import com.astrocam.app.camera.SettingsStore
 import com.astrocam.app.camera.appVersion
 import com.astrocam.app.camera.buildProfile
 import com.astrocam.app.camera.controlLimits
@@ -33,6 +36,7 @@ private enum class Screen { Home, Astro, Stack, Tester, Settings, Probe, Raw }
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(applicationContext)
         enableEdgeToEdge()
         setContent { AstroApp() }
     }
@@ -48,10 +52,16 @@ private fun AstroApp() {
         buildProfile(deviceName(), appVersion(context), cameras, limits, rawResults)
     }
     val limitsForControls = remember(cameras, profile) { controlLimits(cameras, profile) }
-    var night by rememberSaveable { mutableStateOf(NightTheme.Dark) }
+
+    // Settings are saved as soon as they change, so they survive closing the app.
+    var settings by remember { mutableStateOf(SettingsStore.load(context)) }
+    val updateSettings: (AppSettings) -> Unit = {
+        settings = it
+        SettingsStore.save(context, it)
+    }
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
 
-    AstroTheme(night) {
+    AstroTheme(if (settings.redMode) NightTheme.Red else NightTheme.Dark) {
         BackHandler(enabled = screen != Screen.Home) {
             screen = if (screen == Screen.Probe || screen == Screen.Raw) Screen.Settings else Screen.Home
         }
@@ -64,12 +74,18 @@ private fun AstroApp() {
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
-            Screen.Astro -> AstroScreen(limits = limitsForControls, onBack = { screen = Screen.Home })
-            Screen.Stack -> StackScreen(onBack = { screen = Screen.Home })
+            Screen.Astro -> AstroScreen(
+                limits = limitsForControls,
+                settings = settings,
+                onSettings = updateSettings,
+                onOpenStack = { screen = Screen.Stack },
+                onBack = { screen = Screen.Home },
+            )
+            Screen.Stack -> StackScreen(settings = settings, onBack = { screen = Screen.Home })
             Screen.Tester -> TesterScreen(cameras = cameras, profile = profile, onBack = { screen = Screen.Home })
             Screen.Settings -> SettingsScreen(
-                night = night,
-                onNightChange = { night = if (it) NightTheme.Red else NightTheme.Dark },
+                settings = settings,
+                onSettings = updateSettings,
                 profile = profile,
                 onResetProfile = {
                     limits = ProfileStore.reset(context)

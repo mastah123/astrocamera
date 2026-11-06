@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.astrocam.app.camera.CameraInfo
 import com.astrocam.app.camera.CameraProfile
 import com.astrocam.app.camera.DeviceProfile
+import com.astrocam.app.camera.Thermal
 import com.astrocam.app.camera.buildReport
 import com.astrocam.app.camera.deviceName
 import com.astrocam.app.camera.rawRow
@@ -46,7 +47,7 @@ fun TesterScreen(cameras: List<CameraInfo>, profile: DeviceProfile, onBack: () -
                 title = { Text("Camera Tester") },
                 navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
                 actions = {
-                    TextButton(onClick = { shareReport(context, buildReport(deviceName(), cameras, profile)) }) {
+                    TextButton(onClick = { shareReport(context, buildReport(deviceName(), cameras, profile, Thermal.read(context))) }) {
                         Text("Share")
                     }
                 },

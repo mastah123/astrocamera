@@ -1,7 +1,6 @@
 package com.astrocam.app.ui
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,13 +8,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -33,40 +33,56 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.astrocam.app.camera.AppSettings
 import com.astrocam.app.camera.CaptureLog
+import com.astrocam.app.camera.CrashLog
+import com.astrocam.app.camera.Originals
+import com.astrocam.app.camera.OriginalsPolicy
 import com.astrocam.app.camera.SessionInfo
 import com.astrocam.app.camera.StackMode
 import com.astrocam.app.camera.StackResult
 import com.astrocam.app.camera.Stacker
-import com.astrocam.app.camera.Stretch
 import com.astrocam.app.camera.formatExposure
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StackScreen(onBack: () -> Unit) {
+fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val colors = MaterialTheme.colorScheme
 
-    val sessions = remember { CaptureLog.sessions(context) }
+    var sessions by remember { mutableStateOf(CaptureLog.sessions(context)) }
     var selected by remember { mutableStateOf(0) }
     var mode by remember { mutableStateOf(StackMode.Average) }
-    var stretch by remember { mutableStateOf(Stretch.Medium) }
+    var boost by remember { mutableStateOf(settings.boost) }
     var running by remember { mutableStateOf(false) }
     var progressLabel by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf(0f) }
     var result by remember { mutableStateOf<StackResult?>(null) }
+    var errorText by remember { mutableStateOf<String?>(null) }
     var showStacked by remember { mutableStateOf(true) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var deleteQuestion by remember { mutableStateOf(false) }
 
     DisposableEffect(running) {
         view.keepScreenOn = running
         onDispose { view.keepScreenOn = false }
+    }
+
+    // Removes the originals that went into a verified result, then refreshes the list.
+    fun deleteOriginals(r: StackResult) {
+        val removed = Originals.delete(context, r.usedRefs)
+        sessions = CaptureLog.sessions(context)
+        selected = 0
+        result = StackResult(
+            r.original, r.stacked, r.used, r.rejected, r.savedName, r.savedLocation, r.verified, r.usedRefs,
+            r.message + " Deleted $removed original frames.",
+        )
     }
 
     Scaffold(
@@ -86,7 +102,7 @@ fun StackScreen(onBack: () -> Unit) {
             modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (sessions.isEmpty()) {
+            if (sessions.isEmpty() && result == null) {
                 Text(
                     "No multi-frame captures yet. In Astro Camera, set 5 or more frames and take a sequence, " +
                         "then come back here.",
@@ -95,25 +111,27 @@ fun StackScreen(onBack: () -> Unit) {
                 return@Column
             }
 
-            Text("Capture", fontWeight = FontWeight.SemiBold)
-            sessions.forEachIndexed { index, s ->
-                OptionRow(
-                    selected = selected == index,
-                    enabled = !running,
-                    title = s.session.removePrefix("SESSION_"),
-                    detail = describe(s),
-                ) { selected = index }
-            }
+            if (sessions.isNotEmpty()) {
+                SectionTitle("Capture")
+                sessions.forEachIndexed { index, s ->
+                    OptionRow(selected == index, s.session.removePrefix("SESSION_"), describe(s), !running) { selected = index }
+                }
 
-            Text("Method", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-            StackMode.values().forEach { m ->
-                OptionRow(mode == m, !running, m.label, m.hint) { mode = m }
-            }
+                SectionTitle("Method")
+                StackMode.values().forEach { m -> OptionRow(mode == m, m.label, m.hint, !running) { mode = m } }
 
-            Text("Brightness boost", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-            Stretch.values().forEach { st ->
-                OptionRow(stretch == st, !running, st.label,
-                    if (st == Stretch.Off) "Keep the stacked result as it is" else "Brighten faint detail") { stretch = st }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Brightness boost")
+                        Text("Brightens faint detail", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                    Switch(checked = boost, onCheckedChange = { boost = it }, enabled = !running)
+                }
+                Text(
+                    "Original frames after stacking: ${settings.originals.label.lowercase()} (change in Settings)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                )
             }
 
             if (running) {
@@ -122,21 +140,37 @@ fun StackScreen(onBack: () -> Unit) {
                 }
                 LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth())
                 Text(progressLabel, color = colors.onSurfaceVariant)
-            } else {
+            } else if (sessions.isNotEmpty()) {
                 Button(
                     onClick = {
-                        val chosen = sessions[selected]
+                        val chosen: SessionInfo = sessions[selected]
                         job = scope.launch {
                             running = true
                             result = null
+                            errorText = null
                             progress = 0f
                             try {
-                                result = Stacker.stack(context, chosen, mode, stretch) { label, fraction ->
+                                val r = Stacker.stack(context, chosen, mode, boost) { label, fraction ->
                                     progressLabel = label
                                     progress = fraction
                                 }
+                                result = r
                                 showStacked = true
                                 progressLabel = ""
+                                if (r.verified) {
+                                    when (settings.originals) {
+                                        OriginalsPolicy.Delete -> deleteOriginals(r)
+                                        OriginalsPolicy.Ask -> deleteQuestion = true
+                                        OriginalsPolicy.Keep -> Unit
+                                    }
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                // Show the problem instead of closing the app, and keep it for Settings, Diagnostics.
+                                CrashLog.record(context, e)
+                                errorText = "Stacking failed: ${e.message ?: e.javaClass.simpleName}. " +
+                                    "Your frames were not changed. Share the error from Settings, Diagnostics."
                             } finally {
                                 running = false
                             }
@@ -146,6 +180,8 @@ fun StackScreen(onBack: () -> Unit) {
                 ) { Text("Stack frames") }
                 if (progressLabel.isNotEmpty()) Text(progressLabel, color = colors.onSurfaceVariant)
             }
+
+            errorText?.let { Text(it, color = colors.error) }
 
             result?.let { r ->
                 Text(r.message)
@@ -170,23 +206,25 @@ fun StackScreen(onBack: () -> Unit) {
             }
         }
     }
+
+    val pending = result
+    if (deleteQuestion && pending != null) {
+        AlertDialog(
+            onDismissRequest = { deleteQuestion = false },
+            title = { Text("Delete the original frames?") },
+            text = {
+                Text(
+                    "The stacked image was saved and checked. Delete the ${pending.usedRefs.size} original frames " +
+                        "that went into it to save storage? Frames that could not be used are kept."
+                )
+            },
+            confirmButton = { TextButton(onClick = { deleteQuestion = false; deleteOriginals(pending) }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deleteQuestion = false }) { Text("Keep") } },
+        )
+    }
 }
 
 private fun describe(s: SessionInfo): String {
     val settings = if (s.manual) "${formatExposure(s.exposureNs)} · ISO ${s.iso}" else "auto"
     return "${s.frames.size} frames · $settings"
-}
-
-@Composable
-private fun OptionRow(selected: Boolean, enabled: Boolean, title: String, detail: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = onClick, enabled = enabled)
-        Column {
-            Text(title)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
 }
