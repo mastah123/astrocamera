@@ -56,7 +56,7 @@ object Stacker {
     private const val MAX_SHIFT_HALF = 100
     private const val STAR_COUNT = 60
     private const val PREVIEW_MAX = 1280
-    private const val BOOST_GAMMA = 0.6f
+    private const val BOOST_GAMMA = 0.7f
 
     suspend fun stack(
         context: Context,
@@ -232,7 +232,10 @@ object Stacker {
         save: Boolean,
     ): StackResult {
         // One stretch, taken from the stack, is applied to the stack and to the single-frame preview.
-        val lut = if (boost) buildLut(out, BOOST_GAMMA) else null
+        // Dark pictures: smooth the colour noise first. Brightness, which holds the stars, is not touched.
+        val dark = meanLuma(out) < 60f
+        if (dark) denoiseChroma(out, iw, ih, 4)
+        val lut = if (boost) buildLut(out, BOOST_GAMMA, dark) else null
         if (lut != null) applyLut(out, lut)
 
         val fullBitmap = Bitmap.createBitmap(iw, ih, Bitmap.Config.ARGB_8888)
@@ -599,7 +602,7 @@ object Stacker {
      * One of the frames with the same stretch as the stack, for a fair side-by-side view.
      * Decoded bitmaps are read-only, so the pixels go into a new bitmap instead of being edited in place.
      */
-    private fun originalPreview(context: Context, ref: FrameRef, lut: IntArray?, rotation: Int): Bitmap? {
+    private fun originalPreview(context: Context, ref: FrameRef, lut: Array<IntArray>?, rotation: Int): Bitmap? {
         val small = decode(context, ref.location, 4) ?: return null
         val w = small.width
         val h = small.height
@@ -616,36 +619,119 @@ object Stacker {
 
     // ---- stretch ----
 
-    private fun buildLut(pixels: IntArray, gamma: Float): IntArray {
-        val hist = IntArray(256)
-        for (p in pixels) {
-            val luma = (77 * ((p shr 16) and 255) + 150 * ((p shr 8) and 255) + 29 * (p and 255)) shr 8
-            hist[luma]++
+    private fun meanLuma(px: IntArray): Float {
+        var sum = 0L
+        var n = 0
+        var i = 0
+        while (i < px.size) {
+            val p = px[i]
+            sum += (77 * ((p shr 16) and 255) + 150 * ((p shr 8) and 255) + 29 * (p and 255)) shr 8
+            n++
+            i += 7
         }
-        val total = pixels.size
-        var lo = 0
-        var hi = 255
+        return if (n == 0) 0f else sum.toFloat() / n
+    }
+
+    private fun percentile(hist: IntArray, total: Int, share: Double): Int {
         var cumulative = 0
-        var foundLo = false
         for (v in 0..255) {
             cumulative += hist[v]
-            if (!foundLo && cumulative >= total * 0.01) { lo = v; foundLo = true }
-            if (cumulative >= total * 0.997) { hi = v; break }
+            if (cumulative >= total * share) return v
         }
-        if (hi < lo + 8) hi = min(255, lo + 8)
-        return IntArray(256) { v ->
-            val t = ((v - lo) / (hi - lo).toFloat()).coerceIn(0f, 1f)
-            (t.pow(gamma) * 255f).roundToInt().coerceIn(0, 255)
+        return 255
+    }
+
+    /**
+     * One stretch curve per colour. Each colour's own background level becomes black, which removes
+     * a colour cast (red and blue sit above green in dark phone pictures and turn the sky pink when
+     * stretched together). The gain is capped so a nearly black picture is not blown up into noise.
+     */
+    private fun buildLut(pixels: IntArray, gamma: Float, dark: Boolean): Array<IntArray> {
+        val hist = Array(3) { IntArray(256) }
+        val lumaHist = IntArray(256)
+        for (p in pixels) {
+            val r = (p shr 16) and 255
+            val g = (p shr 8) and 255
+            val b = p and 255
+            hist[0][r]++
+            hist[1][g]++
+            hist[2][b]++
+            lumaHist[(77 * r + 150 * g + 29 * b) shr 8]++
+        }
+        val total = pixels.size
+        // In a dark picture most pixels are sky, so the background is a high share of them.
+        val skyShare = if (dark) 0.35 else 0.01
+        val black = IntArray(3) { percentile(hist[it], total, skyShare) }
+        val blackLuma = (77 * black[0] + 150 * black[1] + 29 * black[2]) shr 8
+        val whiteLuma = percentile(lumaHist, total, 0.997)
+        val range = max(whiteLuma - blackLuma, if (dark) 64 else 8).toFloat()
+        return Array(3) { c ->
+            IntArray(256) { v ->
+                val t = ((v - black[c]) / range).coerceIn(0f, 1f)
+                (t.pow(gamma) * 255f).roundToInt().coerceIn(0, 255)
+            }
         }
     }
 
-    private fun applyLut(pixels: IntArray, lut: IntArray) {
+    private fun applyLut(pixels: IntArray, lut: Array<IntArray>) {
+        val red = lut[0]
+        val green = lut[1]
+        val blue = lut[2]
         for (i in pixels.indices) {
             val p = pixels[i]
             pixels[i] = (0xFF shl 24) or
-                (lut[(p shr 16) and 255] shl 16) or
-                (lut[(p shr 8) and 255] shl 8) or
-                lut[p and 255]
+                (red[(p shr 16) and 255] shl 16) or
+                (green[(p shr 8) and 255] shl 8) or
+                blue[p and 255]
+        }
+    }
+
+    /** Blurs only the colour of a dark picture. The brightness, where the stars are, stays sharp. */
+    private fun denoiseChroma(px: IntArray, w: Int, h: Int, radius: Int) {
+        val n = px.size
+        val cb = IntArray(n)
+        val cr = IntArray(n)
+        for (i in 0 until n) {
+            val p = px[i]
+            val r = (p shr 16) and 255
+            val g = (p shr 8) and 255
+            val b = p and 255
+            val y = (77 * r + 150 * g + 29 * b) shr 8
+            cb[i] = b - y
+            cr[i] = r - y
+        }
+        val tmp = IntArray(n)
+        boxBlur(cb, tmp, w, h, radius)
+        boxBlur(cr, tmp, w, h, radius)
+        for (i in 0 until n) {
+            val p = px[i]
+            val y = (77 * ((p shr 16) and 255) + 150 * ((p shr 8) and 255) + 29 * (p and 255)) shr 8
+            val r = (y + cr[i]).coerceIn(0, 255)
+            val b = (y + cb[i]).coerceIn(0, 255)
+            val g = ((256 * y - 77 * r - 29 * b) / 150).coerceIn(0, 255)
+            px[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+
+    /** Box blur with a sliding sum, along rows and then columns. Edges repeat their outermost pixel. */
+    private fun boxBlur(data: IntArray, tmp: IntArray, w: Int, h: Int, r: Int) {
+        val size = 2 * r + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var sum = 0
+            for (k in -r..r) sum += data[row + k.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                tmp[row + x] = sum / size
+                sum += data[row + (x + r + 1).coerceAtMost(w - 1)] - data[row + (x - r).coerceAtLeast(0)]
+            }
+        }
+        for (x in 0 until w) {
+            var sum = 0
+            for (k in -r..r) sum += tmp[k.coerceIn(0, h - 1) * w + x]
+            for (y in 0 until h) {
+                data[y * w + x] = sum / size
+                sum += tmp[(y + r + 1).coerceAtMost(h - 1) * w + x] - tmp[(y - r).coerceAtLeast(0) * w + x]
+            }
         }
     }
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-05
+
+### Fixed
+- Brightness boost turned dark stacks pink and amplified the noise. It used one stretch curve for all three colours, built from a very small brightness range.
+  - Each colour now has its own black point, taken from its background level, which removes the colour cast.
+  - The gain is capped for dark pictures so a nearly black image is not blown up into noise.
+  - Dark pictures get their colour noise smoothed before the stretch. Brightness is left alone, so stars stay sharp.
+- Gamma of the boost lowered from 0.6 to 0.7 so the background is not lifted to mid-grey.
+
 ## [0.14.0] - 2026-11-05
 
 ### Added
