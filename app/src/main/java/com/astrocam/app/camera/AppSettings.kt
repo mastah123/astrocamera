@@ -42,6 +42,9 @@ data class AppSettings(
     val askOriginals: Boolean = false,
     val boost: Boolean = true,
     val liveStacking: Boolean = false,
+    val trailFrames: Int = 3,
+    val trailInterval: Int = 10,
+    val trailMinutes: Int = 30,
     val tempProtection: Boolean = true,
     val tempPreset: TempPreset = TempPreset.Normal,
 ) {
@@ -74,6 +77,9 @@ object SettingsStore {
             askOriginals = if (p.contains("ask_originals")) p.getBoolean("ask_originals", false) else legacy == "Ask",
             boost = p.getBoolean("boost", d.boost),
             liveStacking = p.getBoolean("live_stacking", d.liveStacking),
+            trailFrames = p.getInt("trail_frames", d.trailFrames),
+            trailInterval = p.getInt("trail_interval", d.trailInterval),
+            trailMinutes = p.getInt("trail_minutes", d.trailMinutes),
             tempProtection = p.getBoolean("temp_protection", d.tempProtection),
             tempPreset = p.enum("temp_preset", d.tempPreset),
         )
@@ -90,6 +96,9 @@ object SettingsStore {
             .putBoolean("ask_originals", s.askOriginals)
             .putBoolean("boost", s.boost)
             .putBoolean("live_stacking", s.liveStacking)
+            .putInt("trail_frames", s.trailFrames)
+            .putInt("trail_interval", s.trailInterval)
+            .putInt("trail_minutes", s.trailMinutes)
             .putBoolean("temp_protection", s.tempProtection)
             .putString("temp_preset", s.tempPreset.name)
             .apply()

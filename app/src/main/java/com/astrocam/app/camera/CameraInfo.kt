@@ -28,6 +28,7 @@ data class CameraInfo(
     val formats: List<String>,
     val physicalIds: List<String>,
     val extensions: List<String> = emptyList(),
+    val physicalWidthMm: Float? = null,
 )
 
 object CameraDetector {
@@ -93,6 +94,7 @@ object CameraDetector {
             formats = formats,
             physicalIds = c.physicalCameraIds.sorted(),
             extensions = extensions,
+            physicalWidthMm = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width,
         )
     }
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-05
+
+### Added
+- Interval star trails. In Star Trails mode the phone takes a short shot, merges it into one running trails image, waits, and repeats for the chosen time, so it does not have to capture continuously.
+- Three new sliders in Star Trails mode: SHOT (frames averaged per shot, 1 to 5), EVERY (continuous, 5 s to 5 min) and FOR (5 minutes to 4 hours), each with a snapping ruler.
+- Details line for trails: number of shots, interval, duration, estimated trail length in pixels, whether the trails will have gaps, and the storage used if the frames are kept.
+- Trail length and gap estimates use the sensor size and focal length to work out how fast stars drift across the picture.
+- Screen dims while a trails session runs and is restored afterwards.
+- A checkpoint image is saved every 10 shots, so a crash or a stopped session keeps most of the night. The older checkpoint is removed once a new one is checked.
+- The thumbnail shows the trails image growing after every shot.
+- Tapping the shutter during a session finishes and saves what has been captured instead of discarding it.
+- Temperature protection pauses a session when the phone is hot and ends it if it gets too hot.
+
+### Changed
+- Star Trails mode no longer changes your frame count or stack setting. Those controls are replaced by the trails sliders while the mode is on.
+- Frames of a trails session are only saved to the gallery when you keep originals; otherwise each shot is merged and dropped.
+
 ## [0.13.0] - 2026-11-05
 
 ### Added

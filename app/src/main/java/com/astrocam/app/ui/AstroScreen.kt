@@ -1,7 +1,11 @@
 package com.astrocam.app.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.os.SystemClock
+import android.view.WindowManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -62,6 +66,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.astrocam.app.camera.AppSettings
+import com.astrocam.app.camera.CameraInfo
 import com.astrocam.app.camera.CaptureStore
 import com.astrocam.app.camera.ControlLimits
 import com.astrocam.app.camera.CrashLog
@@ -90,6 +95,7 @@ import java.util.Collections
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
@@ -104,15 +110,65 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class Control { Exposure, Iso, Focus, Frames, Timer, Stack }
+private enum class Control { Exposure, Iso, Focus, Frames, Timer, Stack, TrailFrames, Every, Duration }
 
-private val Control.isSetting get() = this == Control.Frames || this == Control.Timer || this == Control.Stack
+private val Control.isSetting get() = this == Control.Frames || this == Control.Timer || this == Control.Stack ||
+    this == Control.TrailFrames || this == Control.Every || this == Control.Duration
 
 private const val MAX_FRAMES_UI = 1000
 private const val MAX_TIMER = 30
 private val FRAME_SNAPS = listOf(1, 5, 10, 20, 50, 100, 200, 500, 1000)
 private val TIMER_SNAPS = listOf(0, 2, 5, 10, 20, 30)
 private val STACK_STOPS = listOf(-1, 0, 3, 5, 10, 20, 50, 100, 200)
+private val TRAIL_FRAME_STOPS = listOf(1, 2, 3, 4, 5)
+private val TRAIL_EVERY_STOPS = listOf(0, 5, 10, 15, 30, 60, 120, 300)
+private val TRAIL_MINUTE_STOPS = listOf(5, 10, 15, 30, 60, 90, 120, 180, 240)
+
+private fun idxFrac(stops: List<Int>, value: Int): Float {
+    val i = stops.indices.minByOrNull { abs(stops[it] - value) } ?: 0
+    return i / (stops.size - 1).toFloat()
+}
+private fun idxAt(stops: List<Int>, f: Float) = stops[(f.coerceIn(0f, 1f) * (stops.size - 1)).roundToInt()]
+private fun idxSnaps(stops: List<Int>, label: (Int) -> String) =
+    stops.mapIndexed { i, v -> Snap(i / (stops.size - 1).toFloat(), label(v)) }
+
+private fun intervalLabel(seconds: Int) = when {
+    seconds == 0 -> "Continuous"
+    seconds < 60 -> "$seconds s"
+    else -> "${seconds / 60} min"
+}
+private fun intervalShort(seconds: Int) = when {
+    seconds == 0 -> "Cont"
+    seconds < 60 -> "${seconds}s"
+    else -> "${seconds / 60}m"
+}
+private fun minutesLabel(m: Int) = if (m < 60) "$m min" else "${m / 60} h" + if (m % 60 != 0) " ${m % 60} min" else ""
+private fun minutesShort(m: Int) = if (m < 60) "${m}m" else if (m % 60 == 0) "${m / 60}h" else "%.1fh".format(Locale.US, m / 60.0)
+
+private fun formatClock(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return if (h > 0) "%d:%02d:%02d".format(Locale.US, h, m, s) else "%d:%02d".format(Locale.US, m, s)
+}
+
+/** How many pixels a star drifts across the picture each second (at the celestial equator, the fastest). */
+private fun pxPerSecond(info: CameraInfo): Double {
+    val physical = info.physicalWidthMm
+    val focal = info.focalLengthsMm.firstOrNull()
+    if (physical == null || focal == null || focal <= 0f || info.sensorWidth <= 0) return 0.2
+    val degreesPerPixel = Math.toDegrees(atan(physical.toDouble() / info.sensorWidth / focal))
+    return 0.004167 / degreesPerPixel
+}
+
+private fun Context.findActivity(): Activity? {
+    var c: Context? = this
+    while (c is ContextWrapper) {
+        if (c is Activity) return c
+        c = c.baseContext
+    }
+    return null
+}
 
 private val EXPOSURE_STOPS = listOf(
     1_000_000L to "1/1000", 4_000_000L to "1/250", 16_666_667L to "1/60", 33_333_333L to "1/30",
@@ -259,6 +315,8 @@ private fun AstroContent(
     var lastLocation by remember { mutableStateOf<String?>(null) }
     var stackFraction by remember { mutableStateOf<Float?>(null) }
     var stackDone by remember { mutableStateOf(false) }
+    var trailRun by remember { mutableStateOf(false) }
+    var stopRequested by remember { mutableStateOf(false) }
     val tracker = remember { ProgressTracker() }
     var askDialog by remember { mutableStateOf(false) }
     var tempDialog by remember { mutableStateOf(false) }
@@ -296,14 +354,8 @@ private fun AstroContent(
         isoFrac = limits.isoFraction(800)
         focusFrac = 0f
         autoFocus = false
-        active = Control.Frames
+        active = Control.Every
         panelOpen = true
-        onSettings(
-            settings.copy(
-                frameCount = max(settings.frameCount, 100),
-                stackBatch = if (settings.stackBatch < 0) 20 else settings.stackBatch,
-            )
-        )
     }
     LaunchedEffect(Unit) {
         if (startInTrails) enterTrails()
@@ -598,6 +650,187 @@ private fun AstroContent(
         }
     }
 
+    fun shootTrails(deleteOriginals: Boolean) {
+        val cfg = config ?: return
+        job = scope.launch {
+            busy = true
+            trailRun = true
+            stopRequested = false
+            status = null
+            phase = ""
+            savedCount = 0
+            frameIndex = 0
+            frameTotal = 1
+            stackFraction = null
+            val app = latestSettings
+            val used = latestManual
+            val engine = Stacker.Trails()
+            val session = CaptureStore.newSession()
+            val label = session.removePrefix("SESSION_")
+            val keepFrames = !deleteOriginals
+            val pending = ArrayDeque<Deferred<FrameRef?>>()
+            val window = view.context.findActivity()?.window
+            val lights = window?.attributes
+            var lastCheckpoint: FrameRef? = null
+            var shotNo = 0
+            var failures = 0
+            var stopReason: String? = null
+            try {
+                // Dim the screen for a long session. It is restored at the end.
+                if (window != null && lights != null) {
+                    lights.screenBrightness = 0.02f
+                    window.attributes = lights
+                }
+                for (second in 5 downTo 1) {
+                    if (stopRequested) break
+                    countdown = second
+                    delay(1000)
+                }
+                countdown = 0
+
+                val durationMs = app.trailMinutes * 60_000L
+                val intervalMs = app.trailInterval * 1000L
+                val sessionStart = SystemClock.elapsedRealtime()
+                fun elapsed() = SystemClock.elapsedRealtime() - sessionStart
+                fun timeLeft() = formatClock(max(0L, durationMs - elapsed()) / 1000)
+
+                suspend fun reap() {
+                    val ref = pending.removeFirst().await()
+                    if (ref != null) savedCount++
+                }
+
+                while (!stopRequested && elapsed() < durationMs) {
+                    val cycleStart = SystemClock.elapsedRealtime()
+                    val t = Thermal.read(context)
+                    if (app.tempProtection) {
+                        var lvl = Thermal.level(t, app.tempPreset)
+                        if (lvl == ThermalLevel.Stop) {
+                            stopReason = "Phone reached ${Thermal.tempText(t)}, so the session was ended."
+                            break
+                        }
+                        if (lvl == ThermalLevel.Hot) {
+                            vibrate(context)
+                            var waited = 0
+                            while (waited < 600_000 && !stopRequested) {
+                                phase = "Phone is hot. Pausing to cool down…"
+                                delay(5_000)
+                                waited += 5_000
+                                lvl = Thermal.level(Thermal.read(context), app.tempPreset, margin = 2f)
+                                if (lvl < ThermalLevel.Hot) break
+                            }
+                            phase = ""
+                            if (lvl >= ThermalLevel.Hot) {
+                                stopReason = "Phone stayed too hot, so the session was ended."
+                                break
+                            }
+                            continue
+                        }
+                    }
+
+                    shotNo++
+                    frameIndex = shotNo
+                    phase = "Shot $shotNo · capturing · ${timeLeft()} left"
+                    var got = 0
+                    for (k in 1..app.trailFrames) {
+                        val outcome = controller.capture(used, cfg.sensorOrientation, true)
+                        if (outcome == null) {
+                            failures++
+                            if (failures >= 5) break
+                            continue
+                        }
+                        if (engine.addFrame(outcome.jpeg)) got++
+                        if (keepFrames) {
+                            val index = shotNo * 100 + k
+                            pending.addLast(scope.async(Dispatchers.IO) {
+                                CaptureStore.save(context, outcome.jpeg, used, outcome.reading, cameraId, session, index, 0, t)
+                                    ?.let { FrameRef(it.name, it.location, index) }
+                            })
+                            if (pending.size >= 3) reap()
+                        }
+                    }
+                    if (failures >= 5) {
+                        stopReason = "Stopped after repeated capture failures."
+                        break
+                    }
+                    if (got > 0) engine.endShot() else engine.discardShot()
+                    engine.thumbnail()?.let { lastThumb = it }
+
+                    // A checkpoint every 10 shots means a crash costs minutes, not the whole night.
+                    if (shotNo % 10 == 0) {
+                        phase = "Saving a checkpoint…"
+                        val r = withContext(Dispatchers.Default) {
+                            engine.render(context, "${label}_CHK", app.boost, "AstroCamera/STACKED", true, true)
+                        }
+                        if (r.verified) {
+                            lastCheckpoint?.let { Originals.delete(context, listOf(it)) }
+                            val name = r.savedName
+                            val location = r.savedLocation
+                            if (name != null && location != null) {
+                                lastCheckpoint = FrameRef(name, location, shotNo)
+                                lastLocation = location
+                            }
+                            r.stacked?.let { lastThumb = it }
+                        }
+                    }
+
+                    // Wait out the rest of the interval.
+                    var left = intervalMs - (SystemClock.elapsedRealtime() - cycleStart)
+                    while (left > 0 && !stopRequested && elapsed() < durationMs) {
+                        phase = "Shot $shotNo done · next in ${(left + 999) / 1000} s · ${timeLeft()} left"
+                        stackFraction = (elapsed().toFloat() / durationMs).coerceIn(0f, 1f)
+                        delay(1000)
+                        left -= 1000
+                    }
+                    stackFraction = (elapsed().toFloat() / durationMs).coerceIn(0f, 1f)
+                }
+                while (pending.isNotEmpty()) reap()
+
+                phase = "Saving the star trails…"
+                var finished: StackResult? = null
+                if (engine.shots > 0) {
+                    finished = withContext(Dispatchers.Default) {
+                        engine.render(context, label, app.boost, "AstroCamera/STACKED", true, true)
+                    }
+                }
+                val result = finished
+                if (result != null && result.verified) {
+                    lastCheckpoint?.let { Originals.delete(context, listOf(it)) }
+                    result.stacked?.let { lastThumb = it }
+                    result.savedLocation?.let { lastLocation = it }
+                    stackDone = true
+                    vibrate(context)
+                    scope.launch {
+                        delay(2500)
+                        stackDone = false
+                    }
+                }
+                status = buildString {
+                    stopReason?.let { append(it).append(' ') }
+                    if (engine.shots == 0) append("No shot was captured. ")
+                    else if (result == null || !result.verified) {
+                        append("The star trails image could not be saved and checked. A checkpoint may be in the gallery. ")
+                    }
+                }.trim().ifEmpty { null }
+            } finally {
+                if (window != null && lights != null) {
+                    lights.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = lights
+                }
+                stackFraction = null
+                trailRun = false
+                stopRequested = false
+                busy = false
+                countdown = 0
+                phase = ""
+            }
+        }
+    }
+
+    // One place that starts whichever kind of session the screen is in.
+    fun begin(deleteOriginals: Boolean) {
+        if (latestTrails) shootTrails(deleteOriginals) else shoot(deleteOriginals)
+    }
+
     val focusText = when {
         autoFocus -> "AF"
         focusFrac < 0.01f -> "∞"
@@ -636,6 +869,25 @@ private fun AstroContent(
         }
     }
 
+    val trailK = settings.trailFrames
+    val trailShotMs = trailK * (ms.exposureNs / 1_000_000L) + 1500L
+    val trailCycleMs = max(settings.trailInterval * 1000L, trailShotMs)
+    val trailSeconds = settings.trailMinutes * 60L
+    val trailShots = (trailSeconds * 1000L / trailCycleMs).toInt()
+    val pxPerSec = pxPerSecond(limits.camera)
+    val gapPx = max(0.0, (trailCycleMs - trailK * (ms.exposureNs / 1_000_000L)) / 1000.0 * pxPerSec)
+    val trailsDetails = buildString {
+        append("★ $trailShots shots · $trailK frames each · ")
+        append(if (settings.trailInterval == 0) "continuous" else "every ${settings.trailInterval} s")
+        append(" · ${minutesLabel(settings.trailMinutes)}")
+        append(" · trails ≈ ${(trailSeconds * pxPerSec).roundToInt()} px")
+        append(if (gapPx <= 2.0) " · no gaps" else " · gaps ≈ ${gapPx.roundToInt()} px")
+        append(
+            if (settings.deleteOriginals) " · originals not kept"
+            else " · originals ≈ ${formatStorage(trailShots * trailK * sizeEach)}"
+        )
+    }
+
     Column(modifier = modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         // Top bar: back, current settings, star trails, heat.
         Row(
@@ -663,7 +915,7 @@ private fun AstroContent(
                     "Frame $frameIndex of $frameTotal · $liveDone stacked"
                 burst -> "Frame $frameIndex of $frameTotal · saved $savedCount"
                 status != null -> status.orEmpty()
-                else -> details
+                else -> if (trails) trailsDetails else details
             },
             style = MaterialTheme.typography.bodySmall,
             color = if (error != null) colors.error else colors.onSurfaceVariant,
@@ -745,6 +997,25 @@ private fun AstroContent(
                                 }
                             },
                         )
+                        Control.TrailFrames -> SliderPanel(
+                            "Frames per shot", "${settings.trailFrames}", idxFrac(TRAIL_FRAME_STOPS, settings.trailFrames),
+                            { onSettings(settings.copy(trailFrames = idxAt(TRAIL_FRAME_STOPS, it))) },
+                            idxSnaps(TRAIL_FRAME_STOPS) { it.toString() },
+                            "Averaged into one shot to cut noise. More frames make each shot longer.", at,
+                        )
+                        Control.Every -> SliderPanel(
+                            "Every", intervalLabel(settings.trailInterval), idxFrac(TRAIL_EVERY_STOPS, settings.trailInterval),
+                            { onSettings(settings.copy(trailInterval = idxAt(TRAIL_EVERY_STOPS, it))) },
+                            idxSnaps(TRAIL_EVERY_STOPS, ::intervalShort),
+                            if (gapPx <= 2.0) "Trails will be continuous" else "Dotted trails, gaps ≈ ${gapPx.roundToInt()} px",
+                            at,
+                        )
+                        Control.Duration -> SliderPanel(
+                            "For", minutesLabel(settings.trailMinutes), idxFrac(TRAIL_MINUTE_STOPS, settings.trailMinutes),
+                            { onSettings(settings.copy(trailMinutes = idxAt(TRAIL_MINUTE_STOPS, it))) },
+                            idxSnaps(TRAIL_MINUTE_STOPS, ::minutesShort),
+                            "Trails ≈ ${(trailSeconds * pxPerSec).roundToInt()} px long. Keep the phone charging and still.", at,
+                        )
                     }
                 }
                 if (countdown > 0) {
@@ -757,6 +1028,7 @@ private fun AstroContent(
         }
 
         // One strip of settings. Each chip opens its slider over the preview.
+        // Star trails mode swaps the last three for frames per shot, interval and duration.
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -775,12 +1047,21 @@ private fun AstroContent(
                 ms.manual && !busy, Modifier.weight(1f)) { open(Control.Iso) }
             StripChip("FOCUS", if (ms.manual && limits.manualFocus) focusText else "Auto", showPanel && active == Control.Focus,
                 ms.manual && limits.manualFocus && !busy, Modifier.weight(1f)) { open(Control.Focus) }
-            StripChip("FRAMES", settings.frameCount.toString(), showPanel && active == Control.Frames,
-                !busy, Modifier.weight(1f)) { open(Control.Frames) }
-            StripChip("TIMER", if (settings.timerSeconds == 0) "Off" else "${settings.timerSeconds}s",
-                showPanel && active == Control.Timer, !busy, Modifier.weight(1f)) { open(Control.Timer) }
-            StripChip("STACK", StackPlan.short(settings.stackBatch), showPanel && active == Control.Stack,
-                !busy, Modifier.weight(1f)) { open(Control.Stack) }
+            if (trails) {
+                StripChip("SHOT", "${settings.trailFrames}×", showPanel && active == Control.TrailFrames,
+                    !busy, Modifier.weight(1f)) { open(Control.TrailFrames) }
+                StripChip("EVERY", intervalShort(settings.trailInterval), showPanel && active == Control.Every,
+                    !busy, Modifier.weight(1f)) { open(Control.Every) }
+                StripChip("FOR", minutesShort(settings.trailMinutes), showPanel && active == Control.Duration,
+                    !busy, Modifier.weight(1f)) { open(Control.Duration) }
+            } else {
+                StripChip("FRAMES", settings.frameCount.toString(), showPanel && active == Control.Frames,
+                    !busy, Modifier.weight(1f)) { open(Control.Frames) }
+                StripChip("TIMER", if (settings.timerSeconds == 0) "Off" else "${settings.timerSeconds}s",
+                    showPanel && active == Control.Timer, !busy, Modifier.weight(1f)) { open(Control.Timer) }
+                StripChip("STACK", StackPlan.short(settings.stackBatch), showPanel && active == Control.Stack,
+                    !busy, Modifier.weight(1f)) { open(Control.Stack) }
+            }
         }
 
         // Bottom row: last capture, shutter, Manual or Auto.
@@ -795,6 +1076,7 @@ private fun AstroContent(
                 label = when {
                     countdown > 0 -> countdown.toString()
                     stackDone -> "✓"
+                    busy && trailRun && countdown == 0 -> "■"
                     burst -> frameIndex.toString()
                     busy -> "…"
                     else -> ""
@@ -804,11 +1086,13 @@ private fun AstroContent(
                 onClick = {
                     when {
                         countdown > 0 -> { job?.cancel(); status = "Timer cancelled" }
+                        // A star trails session finishes and saves what it has instead of being thrown away.
+                        busy && trailRun -> { stopRequested = true; phase = "Finishing…" }
                         busy -> { job?.cancel(); status = "Stopped. Frames already saved were kept." }
                         else -> {
-                            val needsAsk = settings.frameCount > 1 && settings.stackBatch >= 0 &&
-                                settings.originals == OriginalsPolicy.Ask
-                            if (needsAsk) askDialog = true else shoot(settings.originals == OriginalsPolicy.Delete)
+                            val needsAsk = if (trails) settings.originals == OriginalsPolicy.Ask
+                            else settings.frameCount > 1 && settings.stackBatch >= 0 && settings.originals == OriginalsPolicy.Ask
+                            if (needsAsk) askDialog = true else begin(settings.originals == OriginalsPolicy.Delete)
                         }
                     }
                 },
@@ -830,8 +1114,8 @@ private fun AstroContent(
                         "until the stacked image is saved and checked."
                 )
             },
-            confirmButton = { TextButton(onClick = { askDialog = false; shoot(true) }) { Text("Delete originals") } },
-            dismissButton = { TextButton(onClick = { askDialog = false; shoot(false) }) { Text("Keep originals") } },
+            confirmButton = { TextButton(onClick = { askDialog = false; begin(true) }) { Text("Delete originals") } },
+            dismissButton = { TextButton(onClick = { askDialog = false; begin(false) }) { Text("Keep originals") } },
         )
     }
     resumePrompt?.let { prompt ->

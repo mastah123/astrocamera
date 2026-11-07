@@ -132,7 +132,7 @@ fun HomeScreen(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Tile("★", "Star Trails", "${settings.frameCount} frames · stack ${StackPlan.short(settings.stackBatch)}",
+                Tile("★", "Star Trails", "${settings.trailMinutes} min · every ${if (settings.trailInterval == 0) "frame" else "${settings.trailInterval} s"}",
                     Modifier.weight(1f), cardColors, onOpenTrails)
                 Tile("▣", "Stacking Studio", if (captures == 0) "No captures yet" else "$captures capture${if (captures == 1) "" else "s"} ready",
                     Modifier.weight(1f), cardColors, onOpenStack)

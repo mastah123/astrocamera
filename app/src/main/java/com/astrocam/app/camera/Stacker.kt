@@ -429,6 +429,126 @@ object Stacker {
         }
     }
 
+    /**
+     * Star trails built from timed shots. Each shot averages a few frames to cut noise, then the
+     * brightest pixels of the shot are merged into one running image. Nothing is aligned, so the
+     * phone must be on a tripod. Feed it from one coroutine.
+     */
+    class Trails {
+        private var width = 0
+        private var height = 0
+        private var best: ByteArray? = null
+        private var shotSum: ShortArray? = null
+        private var pixels: IntArray? = null
+        private var rotation = 0
+        private var inShot = 0
+
+        var shots = 0
+            private set
+        var frames = 0
+            private set
+
+        /** Adds one frame to the shot being built. Returns false if it could not be read. */
+        fun addFrame(jpeg: ByteArray): Boolean {
+            val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+            val bmp = runCatching { BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options) }.getOrNull() ?: return false
+            val w = bmp.width
+            val h = bmp.height
+            var sum = shotSum
+            var px = pixels
+            if (sum == null || px == null || best == null) {
+                width = w
+                height = h
+                sum = ShortArray(w * h * 3)
+                px = IntArray(w * h)
+                shotSum = sum
+                pixels = px
+                best = ByteArray(w * h * 3)
+                rotation = rotationOf(ByteArrayInputStream(jpeg))
+            } else if (w != width || h != height) {
+                bmp.recycle()
+                return false
+            }
+            bmp.getPixels(px, 0, w, 0, 0, w, h)
+            bmp.recycle()
+            for (i in px.indices) {
+                val p = px[i]
+                val j = i * 3
+                sum[j] = (sum[j] + ((p shr 16) and 0xFF)).toShort()
+                sum[j + 1] = (sum[j + 1] + ((p shr 8) and 0xFF)).toShort()
+                sum[j + 2] = (sum[j + 2] + (p and 0xFF)).toShort()
+            }
+            inShot++
+            return true
+        }
+
+        fun discardShot() {
+            shotSum?.fill(0)
+            inShot = 0
+        }
+
+        /** Averages the frames of this shot and keeps the brightest pixels in the running image. */
+        fun endShot() {
+            val sum = shotSum ?: return
+            val keep = best ?: return
+            if (inShot == 0) return
+            val n = inShot
+            for (i in sum.indices) {
+                val v = (sum[i] + n / 2) / n
+                if (v > (keep[i].toInt() and 0xFF)) keep[i] = v.toByte()
+            }
+            sum.fill(0)
+            frames += n
+            shots++
+            inShot = 0
+        }
+
+        /** A small, upright picture of the trails so far, cheap enough to make after every shot. */
+        fun thumbnail(): Bitmap? {
+            val keep = best ?: return null
+            val step = 8
+            val tw = width / step
+            val th = height / step
+            if (tw <= 0 || th <= 0) return null
+            val px = IntArray(tw * th)
+            for (y in 0 until th) {
+                for (x in 0 until tw) {
+                    val i = ((y * step) * width + x * step) * 3
+                    px[y * tw + x] = (0xFF shl 24) or ((keep[i].toInt() and 0xFF) shl 16) or
+                        ((keep[i + 1].toInt() and 0xFF) shl 8) or (keep[i + 2].toInt() and 0xFF)
+                }
+            }
+            val bmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(px, 0, tw, 0, 0, tw, th)
+            val upright = rotate(bmp, rotation)
+            if (upright !== bmp) bmp.recycle()
+            return upright
+        }
+
+        /** Stretches, saves and reads back the picture so far. Safe to call again for checkpoints. */
+        fun render(
+            context: Context,
+            label: String,
+            boost: Boolean,
+            folder: String,
+            previews: Boolean,
+            save: Boolean,
+        ): StackResult {
+            val keep = best
+            if (keep == null || shots == 0) return failure("No shot was captured.")
+            val out = IntArray(width * height)
+            for (i in out.indices) {
+                val j = i * 3
+                out[i] = (0xFF shl 24) or ((keep[j].toInt() and 0xFF) shl 16) or
+                    ((keep[j + 1].toInt() and 0xFF) shl 8) or (keep[j + 2].toInt() and 0xFF)
+            }
+            return publish(
+                context, out, width, height, rotation, boost, folder, label, StackMode.Trails,
+                emptyList(), frames, 0, frames, "", null, previews, save,
+            )
+        }
+    }
+
     // ---- decoding ----
 
     private fun open(context: Context, location: String): InputStream? =
