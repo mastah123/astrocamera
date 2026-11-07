@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -24,6 +25,7 @@ import com.astrocam.app.camera.deviceName
 import com.astrocam.app.ui.AstroScreen
 import com.astrocam.app.ui.AstroTheme
 import com.astrocam.app.ui.HomeScreen
+import com.astrocam.app.ui.LiveTestScreen
 import com.astrocam.app.ui.NightTheme
 import com.astrocam.app.ui.ProbeScreen
 import com.astrocam.app.ui.RawScreen
@@ -31,7 +33,7 @@ import com.astrocam.app.ui.SettingsScreen
 import com.astrocam.app.ui.StackScreen
 import com.astrocam.app.ui.TesterScreen
 
-private enum class Screen { Home, Astro, Stack, Tester, Settings, Probe, Raw }
+private enum class Screen { Home, Astro, Stack, Tester, Settings, Probe, Raw, LiveTest }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,8 +50,9 @@ private fun AstroApp() {
     val cameras = remember { CameraDetector.detect(context) }
     var limits by remember { mutableStateOf(ProfileStore.load(context)) }
     var rawResults by remember { mutableStateOf(ProfileStore.loadRaw(context)) }
-    val profile = remember(cameras, limits, rawResults) {
-        buildProfile(deviceName(), appVersion(context), cameras, limits, rawResults)
+    var liveResult by remember { mutableStateOf(ProfileStore.loadLive(context)) }
+    val profile = remember(cameras, limits, rawResults, liveResult) {
+        buildProfile(deviceName(), appVersion(context), cameras, limits, rawResults, liveResult)
     }
     val limitsForControls = remember(cameras, profile) { controlLimits(cameras, profile) }
 
@@ -65,7 +68,10 @@ private fun AstroApp() {
 
     AstroTheme(if (settings.redMode) NightTheme.Red else NightTheme.Dark) {
         BackHandler(enabled = screen != Screen.Home) {
-            screen = if (screen == Screen.Probe || screen == Screen.Raw) Screen.Settings else Screen.Home
+            screen = when (screen) {
+                Screen.Probe, Screen.Raw, Screen.LiveTest -> Screen.Settings
+                else -> Screen.Home
+            }
         }
         when (screen) {
             Screen.Home -> HomeScreen(
@@ -77,7 +83,7 @@ private fun AstroApp() {
                 onOpenTester = { screen = Screen.Tester },
                 onOpenSettings = { screen = Screen.Settings },
             )
-            Screen.Astro -> androidx.compose.runtime.key(trailsStart) {
+            Screen.Astro -> key(trailsStart) {
                 AstroScreen(
                     limits = limitsForControls,
                     settings = settings,
@@ -95,9 +101,11 @@ private fun AstroApp() {
                 onResetProfile = {
                     limits = ProfileStore.reset(context)
                     rawResults = emptyMap()
+                    liveResult = null
                 },
                 onOpenProbe = { screen = Screen.Probe },
                 onOpenRaw = { screen = Screen.Raw },
+                onOpenLive = { screen = Screen.LiveTest },
                 onBack = { screen = Screen.Home },
             )
             Screen.Probe -> ProbeScreen(
@@ -109,6 +117,11 @@ private fun AstroApp() {
                 cameras = cameras,
                 onBack = { screen = Screen.Settings },
                 onSaved = { rawResults = it },
+            )
+            Screen.LiveTest -> LiveTestScreen(
+                limits = limitsForControls,
+                onBack = { screen = Screen.Settings },
+                onSaved = { liveResult = it },
             )
         }
     }

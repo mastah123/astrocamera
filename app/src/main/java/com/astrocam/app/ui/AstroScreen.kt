@@ -84,6 +84,7 @@ import com.astrocam.app.camera.formatExposure
 import com.astrocam.app.camera.isoAt
 import com.astrocam.app.camera.isoFraction
 import com.astrocam.app.camera.previewConfig
+import java.util.Collections
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -96,6 +97,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -243,6 +245,7 @@ private fun AstroContent(
 
     var countdown by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
+    // Only problems and progress appear in the details. Saved file names and results do not.
     var status by remember { mutableStateOf<String?>(null) }
     var phase by remember { mutableStateOf("") }
     var job by remember { mutableStateOf<Job?>(null) }
@@ -305,13 +308,24 @@ private fun AstroContent(
             lastLocation = recent.uri
         }
     }
+    // A warning goes away by itself after a few seconds.
+    LaunchedEffect(status, busy) {
+        if (status != null && !busy) {
+            delay(8000)
+            status = null
+        }
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> { resumed = false; canCapture = false; controller.stop() }
-                Lifecycle.Event.ON_RESUME -> resumed = true
+                Lifecycle.Event.ON_RESUME -> {
+                    resumed = true
+                    // Coming back from the gallery: show the normal details again.
+                    if (!busy) status = null
+                }
                 else -> Unit
             }
         }
@@ -345,6 +359,11 @@ private fun AstroContent(
             frameIndex = 0
             val app = latestSettings
             frameTotal = app.frameCount
+            val method = if (latestTrails) StackMode.Trails else app.autoMethod
+            val live = if (app.liveStacking && app.stackBatch >= 0 && app.frameCount > 1) Stacker.Live(method) else null
+            val liveChannel = Channel<Pair<Int, ByteArray>>(2)
+            val liveAdded = Collections.synchronizedSet(mutableSetOf<Int>())
+            var liveJob: Job? = null
             val pending = ArrayDeque<Deferred<FrameRef?>>()
             try {
                 var remaining = app.timerSeconds
@@ -359,7 +378,6 @@ private fun AstroContent(
                 val used = latestManual
                 val total = app.frameCount
                 val batch = if (total > 1) app.stackBatch else -1
-                val method = if (latestTrails) StackMode.Trails else app.autoMethod
                 val session = if (total > 1) CaptureStore.newSession() else null
                 val minimal = total > 1 && used.manual
                 val savedFrames = mutableListOf<FrameRef>()
@@ -371,6 +389,15 @@ private fun AstroContent(
                 var deleted = 0
                 var failures = 0
                 var stopReason: String? = null
+
+                if (live != null) {
+                    // Live stacking: frames are aligned and added one at a time while the next is captured.
+                    liveJob = scope.launch(Dispatchers.Default) {
+                        for ((index, bytes) in liveChannel) {
+                            if (live.add(bytes)) liveAdded += index
+                        }
+                    }
+                }
 
                 suspend fun reap() {
                     val ref = pending.removeFirst().await()
@@ -466,18 +493,31 @@ private fun AstroContent(
                         CaptureStore.save(context, outcome.jpeg, used, outcome.reading, cameraId, session, i, total, t)
                             ?.let { FrameRef(it.name, it.location, i) }
                     })
+                    // If stacking falls behind, this waits instead of dropping frames.
+                    if (live != null) liveChannel.send(i to outcome.jpeg)
                     if (pending.size >= 3) reap()
-                    if (batch > 0 && i % batch == 0) {
+                    if (live == null && batch > 0 && i % batch == 0) {
                         drain()
                         stackBatch()
                     }
                 }
                 drain()
+                if (live != null) {
+                    liveChannel.close()
+                    phase = "Finishing live stack…"
+                    liveJob?.join()
+                }
 
                 var finalResult: StackResult? = null
                 if (batch >= 0 && savedFrames.isNotEmpty() && session != null) {
                     try {
-                        if (batch == 0) {
+                        if (live != null) {
+                            phase = "Saving the live stack…"
+                            val addedRefs = savedFrames.filter { it.frame in liveAdded }
+                            finalResult = withContext(Dispatchers.Default) {
+                                live.finish(context, session.removePrefix("SESSION_"), app.boost, "AstroCamera/STACKED", true, addedRefs)
+                            }
+                        } else if (batch == 0) {
                             phase = "Stacking ${savedFrames.size} frames…"
                             val info = SessionInfo(session, savedFrames.toList(), used.exposureNs, used.iso, used.manual)
                             finalResult = Stacker.stack(context, info, method, app.boost) { label, _ -> phase = label }
@@ -506,22 +546,19 @@ private fun AstroContent(
                     result.savedLocation?.let { lastLocation = it }
                 }
 
-                status = buildString {
+                // Only problems are shown. A normal finish just updates the thumbnail.
+                val problems = buildString {
                     stopReason?.let { append(it).append(' ') }
-                    when {
-                        total == 1 -> append(
-                            savedFrames.firstOrNull()?.let { "Saved ${it.name}" } ?: "Capture failed. Try again."
-                        )
-                        result != null && result.verified -> {
-                            append("Stacked ${result.used} frames into ${result.savedName}.")
-                            if (deleted > 0) append(" Deleted $deleted originals.")
-                        }
-                        batch >= 0 -> append("Stacking did not finish, so the originals were kept.")
-                        else -> append("Saved $savedCount of $total frames to Pictures/AstroCamera/$session")
+                    if (total == 1 && savedFrames.isEmpty()) append("Capture failed. Try again. ")
+                    else if (batch >= 0 && !(result != null && result.verified)) {
+                        append("Stacking did not finish, so the originals were kept. ")
                     }
-                    if (batchFailed > 0) append(" $batchFailed batch(es) could not be stacked; their frames were kept.")
-                }
+                    if (batchFailed > 0) append("$batchFailed batch(es) could not be stacked; their frames were kept.")
+                }.trim()
+                status = problems.ifEmpty { null }
             } finally {
+                liveChannel.close()
+                liveJob?.cancel()
                 busy = false
                 countdown = 0
                 phase = ""
@@ -541,8 +578,32 @@ private fun AstroContent(
     val burst = busy && frameTotal > 1 && countdown == 0
     val showPanel = panelOpen && (active.isSetting || (ms.manual && (active != Control.Focus || limits.manualFocus)))
     val megapixels = config?.jpegSize?.let { it.width * it.height / 1e6 } ?: 8.0
-    val storageText = formatStorage(settings.frameCount * megapixels * 0.4)
+    val sizeEach = megapixels * 0.4
     val totalText = formatTotal(ms.exposureNs * settings.frameCount)
+
+    // Details under the top bar: settings with estimated time and size, in Auto and in Manual.
+    val details = buildString {
+        if (ms.manual) {
+            append("$exposureText · ISO ${ms.iso}")
+        } else {
+            append("Auto")
+            reading?.let { append(" · ${it.exposureNs?.let(::formatExposure) ?: "n/a"} · ISO ${it.iso ?: "n/a"}") }
+        }
+        val perFrameNs = if (ms.manual) ms.exposureNs else (reading?.frameNs ?: reading?.exposureNs)
+        if (settings.frameCount > 1) {
+            append(" · ${settings.frameCount} frames")
+            perFrameNs?.let { append(" · ≈ ${formatTotal(it * settings.frameCount)}") }
+            append(" · ≈ ${formatStorage(settings.frameCount * sizeEach)}")
+        } else {
+            append(" · ≈ ${formatStorage(sizeEach)}")
+        }
+        if (settings.timerSeconds > 0) append(" · ${settings.timerSeconds}s timer")
+        if (settings.frameCount > 1 && settings.stackBatch >= 0) {
+            append(" · stack ${StackPlan.short(settings.stackBatch)}")
+            if (settings.liveStacking) append(" (live)")
+            append(if (settings.deleteOriginals) " · delete originals" else " · keep originals")
+        }
+    }
 
     Column(modifier = modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         // Top bar: back, current settings, star trails, heat.
@@ -559,6 +620,25 @@ private fun AstroContent(
             ) { Text(if (trails) "★ Trails" else "☆ Trails") }
             TempChip(thermal, level) { tempDialog = true }
             Spacer(Modifier.width(8.dp))
+        }
+
+        // Details sit right under the Back button.
+        Text(
+            when {
+                !hasPermission -> "Camera permission is needed for the preview."
+                error != null -> "Preview failed: $error"
+                phase.isNotEmpty() -> phase
+                burst -> "Frame $frameIndex of $frameTotal · saved $savedCount"
+                status != null -> status.orEmpty()
+                else -> details
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (error != null) colors.error else colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        )
+        if (!hasPermission) {
+            Button(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("Grant access") }
         }
 
         // Preview, with the open control's slider laid over its lower edge.
@@ -607,8 +687,8 @@ private fun AstroContent(
                         Control.Frames -> SliderPanel(
                             "Frames", "${settings.frameCount}", framesFrac(settings.frameCount),
                             { onSettings(settings.copy(frameCount = framesAt(it))) }, frameSnaps,
-                            if (ms.manual) "${settings.frameCount} × $exposureText = $totalText · about $storageText if all kept"
-                            else "About $storageText if all frames are kept",
+                            if (ms.manual) "${settings.frameCount} × $exposureText = $totalText · about ${formatStorage(settings.frameCount * sizeEach)} if all kept"
+                            else "About ${formatStorage(settings.frameCount * sizeEach)} if all frames are kept",
                             at,
                         )
                         Control.Timer -> SliderPanel(
@@ -621,10 +701,16 @@ private fun AstroContent(
                             { onSettings(settings.copy(stackBatch = stackAt(it))) }, stackSnaps,
                             when {
                                 settings.stackBatch < 0 -> "Frames are saved without stacking"
+                                settings.liveStacking -> "Live stacking (experimental): frames are stacked as they arrive"
                                 settings.stackBatch == 0 -> "Stacks once, after the last frame"
                                 else -> "Stacks every ${settings.stackBatch} frames, then combines the batches"
                             },
                             at,
+                            extra = {
+                                TextButton(onClick = { onSettings(settings.copy(deleteOriginals = !settings.deleteOriginals)) }) {
+                                    Text(if (settings.deleteOriginals) "Delete originals" else "Keep originals")
+                                }
+                            },
                         )
                     }
                 }
@@ -662,31 +748,6 @@ private fun AstroContent(
                 showPanel && active == Control.Timer, !busy, Modifier.weight(1f)) { open(Control.Timer) }
             StripChip("STACK", StackPlan.short(settings.stackBatch), showPanel && active == Control.Stack,
                 !busy, Modifier.weight(1f)) { open(Control.Stack) }
-        }
-
-        // Status line.
-        val info = buildString {
-            reading?.let { append("Camera: ${it.exposureNs?.let(::formatExposure) ?: "n/a"} · ISO ${it.iso ?: "n/a"}") }
-            if (settings.frameCount > 1 && ms.manual) {
-                if (isNotEmpty()) append(" · ")
-                append("${settings.frameCount} × $exposureText = $totalText")
-            }
-        }
-        Text(
-            when {
-                !hasPermission -> "Camera permission is needed for the preview."
-                error != null -> "Preview failed: $error"
-                phase.isNotEmpty() -> phase
-                burst -> "Frame $frameIndex of $frameTotal · saved $savedCount"
-                else -> status ?: info
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (error != null) colors.error else colors.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        )
-        if (!hasPermission) {
-            Button(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("Grant access") }
         }
 
         // Bottom row: last capture, shutter, Manual or Auto.

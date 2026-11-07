@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -47,7 +48,8 @@ private class Placed(val ref: FrameRef, val sx: Int, val sy: Int, val weight: In
 /**
  * Aligns frames by matching stars (translation only), then averages them or keeps the
  * brightest pixels. Works in two passes so only the needed frames are decoded at full size.
- * Inputs can carry weights, so stacked batches combine correctly.
+ * Inputs can carry weights, so stacked batches combine correctly. [Live] does the same one
+ * frame at a time while a burst is still running.
  */
 object Stacker {
     private const val MAX_FRAMES = 1200
@@ -201,10 +203,36 @@ object Stacker {
         val out = accumulate()
         if (usedRefs.isEmpty()) return failure("No frame could be read.")
 
+        return publish(
+            context, out, iw, ih, exifRotation(context, placed.first().ref.location), boost, folder,
+            session.session.removePrefix("SESSION_"), mode, usedRefs, usedWeight, rejected,
+            weights?.sum() ?: total, note, placed.first().ref, previews, true,
+        )
+    }
+
+    /** Stretch, rotate, save and read back a finished stack. */
+    private fun publish(
+        context: Context,
+        out: IntArray,
+        iw: Int,
+        ih: Int,
+        rotation: Int,
+        boost: Boolean,
+        folder: String,
+        label: String,
+        mode: StackMode,
+        usedRefs: List<FrameRef>,
+        usedWeight: Int,
+        rejected: Int,
+        totalFrames: Int,
+        note: String,
+        originalRef: FrameRef?,
+        previews: Boolean,
+        save: Boolean,
+    ): StackResult {
         // One stretch, taken from the stack, is applied to the stack and to the single-frame preview.
         val lut = if (boost) buildLut(out, BOOST_GAMMA) else null
         if (lut != null) applyLut(out, lut)
-        val rotation = exifRotation(context, placed.first().ref.location)
 
         val fullBitmap = Bitmap.createBitmap(iw, ih, Bitmap.Config.ARGB_8888)
         fullBitmap.setPixels(out, 0, iw, 0, 0, iw, ih)
@@ -213,39 +241,191 @@ object Stacker {
         val outW = upright.width
         val outH = upright.height
 
-        val jpeg = ByteArrayOutputStream().also { upright.compress(Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
-        val tag = if (average) "${usedWeight}f" else "TRAILS_${usedWeight}f"
-        val name = "ASTRO_STACK_${session.session.removePrefix("SESSION_")}_$tag.jpg"
-        val saved = CaptureStore.saveStacked(context, jpeg, name, folder)
+        var saved: Saved? = null
+        if (save) {
+            val jpeg = ByteArrayOutputStream().also { upright.compress(Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
+            val tag = if (mode == StackMode.Average) "${usedWeight}f" else "TRAILS_${usedWeight}f"
+            saved = CaptureStore.saveStacked(context, jpeg, "ASTRO_STACK_${label}_$tag.jpg", folder)
+        }
         // The result only counts as safe once it has been read back from storage.
-        val verified = saved != null && bounds(context, saved.location)?.let { it.first == outW && it.second == outH } == true
+        val location = saved?.location
+        val verified = location != null && bounds(context, location)?.let { it.first == outW && it.second == outH } == true
 
         var stackedPreview: Bitmap? = null
         var originalPreview: Bitmap? = null
         if (previews) {
             stackedPreview = scaleDown(upright)
             if (stackedPreview !== upright) upright.recycle()
-            originalPreview = originalPreview(context, placed.first().ref, lut, rotation)
+            if (originalRef != null) originalPreview = originalPreview(context, originalRef, lut, rotation)
         } else {
             upright.recycle()
         }
 
-        val parts = buildList {
-            add("Stacked $usedWeight of ${weights?.sum() ?: total} frames (${mode.label.lowercase()}).")
+        val message = buildList {
+            add("Stacked $usedWeight of $totalFrames frames (${mode.label.lowercase()}).")
             if (note.isNotEmpty()) add(note)
             if (rejected > 0) add("$rejected inputs could not be read or aligned.")
             add(
                 when {
+                    !save -> "Not saved (test)."
                     saved == null -> "Could not save the result."
                     !verified -> "The saved file could not be verified."
                     else -> "Saved as ${saved.name}."
                 }
             )
-        }
+        }.joinToString(" ")
         return StackResult(
             originalPreview, stackedPreview, usedWeight, rejected,
-            saved?.name, saved?.location, verified, usedRefs, parts.joinToString(" "),
+            saved?.name, saved?.location, verified, usedRefs, message,
         )
+    }
+
+    /**
+     * Stacks frames one at a time as they arrive, on a full-size canvas. Call [add] for every
+     * frame in order, then [finish]. Not thread-safe: feed it from one coroutine.
+     */
+    class Live(private val mode: StackMode) {
+        private val average = mode == StackMode.Average
+        private var width = 0
+        private var height = 0
+        private var acc: IntArray? = null
+        private var pixels: IntArray? = null
+        private var refStars: List<Star>? = null
+        private var alignable = true
+        private var minSx = 0
+        private var maxSx = 0
+        private var minSy = 0
+        private var maxSy = 0
+        private var rotation = 0
+
+        var used = 0
+            private set
+        var rejected = 0
+            private set
+
+        /** True when stars were found in the first frame and later frames are lined up on them. */
+        val aligned: Boolean get() = average && refStars != null && alignable
+
+        /** Adds one JPEG. Returns false if it could not be read or lined up. */
+        fun add(jpeg: ByteArray): Boolean {
+            val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+            val bmp = runCatching { BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options) }.getOrNull()
+            if (bmp == null) {
+                rejected++
+                return false
+            }
+            val w = bmp.width
+            val h = bmp.height
+            var sums = acc
+            var px = pixels
+            if (sums == null || px == null) {
+                width = w
+                height = h
+                sums = IntArray(w * h * 3)
+                px = IntArray(w * h)
+                acc = sums
+                pixels = px
+                rotation = rotationOf(ByteArrayInputStream(jpeg))
+            } else if (w != width || h != height) {
+                bmp.recycle()
+                rejected++
+                return false
+            }
+            bmp.getPixels(px, 0, w, 0, 0, w, h)
+            bmp.recycle()
+
+            var sx = 0
+            var sy = 0
+            if (average) {
+                val stars = detectStarsFromLuma(halfLuma(px, w, h), w / 2, h / 2)
+                val ref = refStars
+                if (ref == null) {
+                    refStars = stars
+                    alignable = stars.size >= 5
+                } else if (alignable) {
+                    val shift = estimateShift(ref, stars)
+                    if (shift == null) {
+                        rejected++
+                        return false
+                    }
+                    sx = (shift.first * 2).roundToInt()
+                    sy = (shift.second * 2).roundToInt()
+                }
+            }
+
+            val xStart = max(0, -sx)
+            val xEnd = min(w, w - sx)
+            val yStart = max(0, -sy)
+            val yEnd = min(h, h - sy)
+            for (y in yStart until yEnd) {
+                var src = y * w + xStart
+                var dst = ((y + sy) * w + xStart + sx) * 3
+                for (x in xStart until xEnd) {
+                    val p = px[src]
+                    val r = (p shr 16) and 0xFF
+                    val g = (p shr 8) and 0xFF
+                    val b = p and 0xFF
+                    if (average) {
+                        sums[dst] += r
+                        sums[dst + 1] += g
+                        sums[dst + 2] += b
+                    } else {
+                        if (r > sums[dst]) sums[dst] = r
+                        if (g > sums[dst + 1]) sums[dst + 1] = g
+                        if (b > sums[dst + 2]) sums[dst + 2] = b
+                    }
+                    src++
+                    dst += 3
+                }
+            }
+            minSx = min(minSx, sx)
+            maxSx = max(maxSx, sx)
+            minSy = min(minSy, sy)
+            maxSy = max(maxSy, sy)
+            used++
+            return true
+        }
+
+        /** Crops to the area every frame covers, stretches, and saves. [usedRefs] are the saved frames that were added. */
+        fun finish(
+            context: Context,
+            label: String,
+            boost: Boolean,
+            folder: String,
+            previews: Boolean,
+            usedRefs: List<FrameRef>,
+            save: Boolean = true,
+        ): StackResult {
+            val sums = acc
+            if (sums == null || used == 0) return failure("No frame could be added.")
+            val x0 = max(0, maxSx)
+            val x1 = min(width, width + minSx)
+            val y0 = max(0, maxSy)
+            val y1 = min(height, height + minSy)
+            val iw = x1 - x0
+            val ih = y1 - y0
+            if (iw <= 0 || ih <= 0) return failure("The frames could not be overlapped.")
+            val out = IntArray(iw * ih)
+            for (oy in 0 until ih) {
+                var src = ((oy + y0) * width + x0) * 3
+                var o = oy * iw
+                for (ox in 0 until iw) {
+                    val r = if (average) (sums[src] + used / 2) / used else sums[src]
+                    val g = if (average) (sums[src + 1] + used / 2) / used else sums[src + 1]
+                    val b = if (average) (sums[src + 2] + used / 2) / used else sums[src + 2]
+                    out[o] = (0xFF shl 24) or (min(r, 255) shl 16) or (min(g, 255) shl 8) or min(b, 255)
+                    src += 3
+                    o++
+                }
+            }
+            acc = null
+            pixels = null
+            val note = if (average && !aligned) "Not enough stars to align, so frames were stacked without alignment." else ""
+            return publish(
+                context, out, iw, ih, rotation, boost, folder, label, mode, usedRefs, used, rejected,
+                used + rejected, note, null, previews, save,
+            )
+        }
     }
 
     // ---- decoding ----
@@ -268,11 +448,9 @@ object Stacker {
         open(context, location)?.use { BitmapFactory.decodeStream(it, null, options) }
     }.getOrNull()
 
-    private fun exifRotation(context: Context, location: String): Int {
+    private fun rotationOf(stream: InputStream): Int {
         val orientation = runCatching {
-            open(context, location)?.use {
-                ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-            }
+            ExifInterface(stream).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         }.getOrNull()
         return when (orientation) {
             ExifInterface.ORIENTATION_ROTATE_90 -> 90
@@ -281,6 +459,9 @@ object Stacker {
             else -> 0
         }
     }
+
+    private fun exifRotation(context: Context, location: String): Int =
+        runCatching { open(context, location)?.use { rotationOf(it) } }.getOrNull() ?: 0
 
     private fun rotate(bitmap: Bitmap, degrees: Int): Bitmap =
         if (degrees == 0) bitmap
@@ -349,17 +530,35 @@ object Stacker {
 
     // ---- stars and alignment ----
 
+    private fun lum(p: Int): Float =
+        0.299f * ((p shr 16) and 255) + 0.587f * ((p shr 8) and 255) + 0.114f * (p and 255)
+
+    /** Brightness at half size, averaged from 2 x 2 blocks of a full-size frame. */
+    private fun halfLuma(px: IntArray, w: Int, h: Int): FloatArray {
+        val hw = w / 2
+        val hh = h / 2
+        val out = FloatArray(hw * hh)
+        for (y in 0 until hh) {
+            val r0 = 2 * y * w
+            val r1 = r0 + w
+            for (x in 0 until hw) {
+                val i = 2 * x
+                out[y * hw + x] = (lum(px[r0 + i]) + lum(px[r0 + i + 1]) + lum(px[r1 + i]) + lum(px[r1 + i + 1])) * 0.25f
+            }
+        }
+        return out
+    }
+
     private fun detectStars(bitmap: Bitmap): List<Star> {
         val w = bitmap.width
         val h = bitmap.height
         val px = IntArray(w * h)
         bitmap.getPixels(px, 0, w, 0, 0, w, h)
         bitmap.recycle()
-        val luma = FloatArray(w * h) { i ->
-            val p = px[i]
-            0.299f * ((p shr 16) and 255) + 0.587f * ((p shr 8) and 255) + 0.114f * (p and 255)
-        }
+        return detectStarsFromLuma(FloatArray(w * h) { lum(px[it]) }, w, h)
+    }
 
+    private fun detectStarsFromLuma(luma: FloatArray, w: Int, h: Int): List<Star> {
         var sum = 0.0
         var sumSq = 0.0
         var n = 0

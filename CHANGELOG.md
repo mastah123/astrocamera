@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-05
+
+### Added
+- Live stacking (Settings, Experimental): each frame is aligned and added to a running stack while the next one is captured. If stacking falls behind, capture waits instead of dropping frames.
+- Live Stacking Test: shoots a short burst twice, capture only and capture with live stacking, and reports time per frame, waiting, queue length, peak memory, temperature and a verdict (handles live stacking, use batches, or not recommended). The result is stored in the device profile and shared with it.
+- Delete originals after stacking is now a simple on/off toggle in Settings, with a separate Ask each time toggle. The Stack slider also has a Keep/Delete originals button.
+- Estimated total time and storage size are shown in Auto mode as well as Manual.
+
+### Changed
+- Details moved to sit directly under the Back button.
+- Details no longer show saved file names or stacking results. Only progress and problems appear, and problems clear themselves after a few seconds and when you return from the gallery.
+- Stacking code now shares one finishing step between normal and live stacking.
+
 ## [0.11.0] - 2026-11-05
 
 ### Added

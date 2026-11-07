@@ -38,11 +38,21 @@ data class AppSettings(
     val timerSeconds: Int = 0,
     val stackBatch: Int = -1,
     val autoMethod: StackMode = StackMode.Average,
-    val originals: OriginalsPolicy = OriginalsPolicy.Ask,
+    val deleteOriginals: Boolean = false,
+    val askOriginals: Boolean = false,
     val boost: Boolean = true,
+    val liveStacking: Boolean = false,
     val tempProtection: Boolean = true,
     val tempPreset: TempPreset = TempPreset.Normal,
-)
+) {
+    /** What happens to original frames after a verified stack. */
+    val originals: OriginalsPolicy
+        get() = when {
+            askOriginals -> OriginalsPolicy.Ask
+            deleteOriginals -> OriginalsPolicy.Delete
+            else -> OriginalsPolicy.Keep
+        }
+}
 
 object SettingsStore {
     private const val PREFS = "app_settings"
@@ -53,14 +63,17 @@ object SettingsStore {
     fun load(context: Context): AppSettings {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val d = AppSettings()
+        val legacy = p.getString("originals", null)
         return AppSettings(
             redMode = p.getBoolean("red_mode", d.redMode),
             frameCount = p.getInt("frame_count", d.frameCount),
             timerSeconds = p.getInt("timer_seconds", d.timerSeconds),
             stackBatch = p.getInt("stack_batch", d.stackBatch),
             autoMethod = p.enum("auto_method", d.autoMethod),
-            originals = p.enum("originals", d.originals),
+            deleteOriginals = if (p.contains("delete_originals")) p.getBoolean("delete_originals", false) else legacy == "Delete",
+            askOriginals = if (p.contains("ask_originals")) p.getBoolean("ask_originals", false) else legacy == "Ask",
             boost = p.getBoolean("boost", d.boost),
+            liveStacking = p.getBoolean("live_stacking", d.liveStacking),
             tempProtection = p.getBoolean("temp_protection", d.tempProtection),
             tempPreset = p.enum("temp_preset", d.tempPreset),
         )
@@ -73,8 +86,10 @@ object SettingsStore {
             .putInt("timer_seconds", s.timerSeconds)
             .putInt("stack_batch", s.stackBatch)
             .putString("auto_method", s.autoMethod.name)
-            .putString("originals", s.originals.name)
+            .putBoolean("delete_originals", s.deleteOriginals)
+            .putBoolean("ask_originals", s.askOriginals)
             .putBoolean("boost", s.boost)
+            .putBoolean("live_stacking", s.liveStacking)
             .putBoolean("temp_protection", s.tempProtection)
             .putString("temp_preset", s.tempPreset.name)
             .apply()

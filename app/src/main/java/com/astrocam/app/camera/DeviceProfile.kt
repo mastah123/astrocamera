@@ -51,6 +51,7 @@ data class DeviceProfile(
     val device: String,
     val appVersion: String,
     val cameras: List<CameraProfile>,
+    val liveTest: LiveTestResult? = null,
 )
 
 fun buildProfile(
@@ -59,6 +60,7 @@ fun buildProfile(
     cameras: List<CameraInfo>,
     limits: Map<String, VerifiedLimit>,
     rawResults: Map<String, Boolean> = emptyMap(),
+    live: LiveTestResult? = null,
 ) = DeviceProfile(
     device, appVersion,
     cameras.map { c ->
@@ -75,6 +77,7 @@ fun buildProfile(
             rawVerified = rawResults[c.id],
         )
     },
+    live,
 )
 
 /** Strongest, then longest, verified limit among rear cameras. */
@@ -85,6 +88,7 @@ fun DeviceProfile.bestBackLimit(): VerifiedLimit? =
 fun DeviceProfile.toJson(): String = JSONObject().apply {
     put("device", device)
     put("appVersion", appVersion)
+    put("liveStackingTest", liveTest?.let { JSONObject().put("verdict", it.verdict).put("summary", it.summary) } ?: JSONObject.NULL)
     put("cameras", JSONArray().apply {
         cameras.forEach { c ->
             put(JSONObject().apply {
@@ -146,6 +150,20 @@ object ProfileStore {
     }
 
     private const val KEY_RAW = "raw_results"
+    private const val KEY_LIVE = "live_test"
+
+    fun loadLive(context: Context): LiveTestResult? {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LIVE, null) ?: return null
+        return runCatching {
+            val o = JSONObject(raw)
+            LiveTestResult(o.getString("verdict"), o.getString("summary"))
+        }.getOrNull()
+    }
+
+    fun saveLive(context: Context, result: LiveTestResult) {
+        val o = JSONObject().put("verdict", result.verdict).put("summary", result.summary)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_LIVE, o.toString()).apply()
+    }
 
     fun loadRaw(context: Context): Map<String, Boolean> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RAW, null)
@@ -166,7 +184,7 @@ object ProfileStore {
     }
 
     fun reset(context: Context): Map<String, VerifiedLimit> {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).remove(KEY_RAW).apply()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).remove(KEY_RAW).remove(KEY_LIVE).apply()
         return emptyMap()
     }
 

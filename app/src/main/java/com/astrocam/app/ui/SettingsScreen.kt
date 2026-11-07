@@ -51,6 +51,7 @@ fun SettingsScreen(
     onResetProfile: () -> Unit,
     onOpenProbe: () -> Unit,
     onOpenRaw: () -> Unit,
+    onOpenLive: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -128,10 +129,31 @@ fun SettingsScreen(
 
             SectionTitle("Original frames after stacking")
             SettingsCard {
-                OriginalsPolicy.values().forEach { policy ->
-                    OptionRow(settings.originals == policy, policy.label, policy.detail) {
-                        onSettings(settings.copy(originals = policy))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Delete originals after stacking")
+                        Text(
+                            if (settings.deleteOriginals) "Originals are deleted once the stacked image is saved and checked"
+                            else "Originals stay in the gallery",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                        )
                     }
+                    Switch(
+                        checked = settings.deleteOriginals,
+                        onCheckedChange = { onSettings(settings.copy(deleteOriginals = it)) },
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Ask each time")
+                        Text("A dialog appears when a stacked burst starts", style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = settings.askOriginals,
+                        onCheckedChange = { onSettings(settings.copy(askOriginals = it)) },
+                    )
                 }
             }
 
@@ -171,6 +193,7 @@ fun SettingsScreen(
                     Text("Verified exposure: ${c.verified?.describe() ?: "not tested"}")
                     Text("RAW capture: ${when (c.rawVerified) { true -> "passed"; false -> "failed"; null -> "not tested" }}")
                 }
+                profile.liveTest?.let { Text("Live stacking test: ${it.verdict}", modifier = Modifier.padding(top = 6.dp)) }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -194,6 +217,21 @@ fun SettingsScreen(
                 )
                 OutlinedButton(onClick = onOpenProbe, modifier = Modifier.fillMaxWidth()) { Text("Long Exposure Test") }
                 OutlinedButton(onClick = onOpenRaw, modifier = Modifier.fillMaxWidth()) { Text("RAW Capture Test") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Live stacking")
+                        Text(
+                            "Stack each frame as it arrives instead of in batches. Heavy on memory and heat",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.liveStacking,
+                        onCheckedChange = { onSettings(settings.copy(liveStacking = it)) },
+                    )
+                }
+                OutlinedButton(onClick = onOpenLive, modifier = Modifier.fillMaxWidth()) { Text("Live Stacking Test") }
             }
 
             SectionTitle("Diagnostics")
