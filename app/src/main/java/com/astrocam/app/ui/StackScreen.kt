@@ -39,6 +39,8 @@ import com.astrocam.app.camera.CaptureLog
 import com.astrocam.app.camera.CrashLog
 import com.astrocam.app.camera.Originals
 import com.astrocam.app.camera.OriginalsPolicy
+import com.astrocam.app.camera.ProgressTracker
+import com.astrocam.app.camera.formatProgress
 import com.astrocam.app.camera.SessionInfo
 import com.astrocam.app.camera.StackMode
 import com.astrocam.app.camera.StackResult
@@ -67,6 +69,7 @@ fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
     var errorText by remember { mutableStateOf<String?>(null) }
     var showStacked by remember { mutableStateOf(true) }
     var job by remember { mutableStateOf<Job?>(null) }
+    val tracker = remember { ProgressTracker() }
     var deleteQuestion by remember { mutableStateOf(false) }
 
     DisposableEffect(running) {
@@ -150,13 +153,15 @@ fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
                             errorText = null
                             progress = 0f
                             try {
+                                tracker.begin()
                                 val r = Stacker.stack(context, chosen, mode, boost) { label, fraction ->
-                                    progressLabel = label
+                                    progressLabel = formatProgress(label, fraction, tracker.etaSeconds(fraction))
                                     progress = fraction
                                 }
                                 result = r
                                 showStacked = true
-                                progressLabel = ""
+                                progressLabel = if (r.verified) "Done ✓" else "Finished, but the result could not be verified"
+                                buzz(context, 150)
                                 if (r.verified) {
                                     when (settings.originals) {
                                         OriginalsPolicy.Delete -> deleteOriginals(r)

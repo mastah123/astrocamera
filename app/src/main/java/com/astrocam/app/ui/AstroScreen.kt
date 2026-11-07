@@ -71,6 +71,8 @@ import com.astrocam.app.camera.ManualSettings
 import com.astrocam.app.camera.Originals
 import com.astrocam.app.camera.OriginalsPolicy
 import com.astrocam.app.camera.PreviewController
+import com.astrocam.app.camera.ProgressTracker
+import com.astrocam.app.camera.formatProgress
 import com.astrocam.app.camera.RecentCapture
 import com.astrocam.app.camera.SessionInfo
 import com.astrocam.app.camera.StackMode
@@ -252,8 +254,12 @@ private fun AstroContent(
     var frameIndex by remember { mutableStateOf(0) }
     var frameTotal by remember { mutableStateOf(1) }
     var savedCount by remember { mutableStateOf(0) }
+    var liveDone by remember { mutableStateOf(0) }
     var lastThumb by remember { mutableStateOf<Bitmap?>(null) }
     var lastLocation by remember { mutableStateOf<String?>(null) }
+    var stackFraction by remember { mutableStateOf<Float?>(null) }
+    var stackDone by remember { mutableStateOf(false) }
+    val tracker = remember { ProgressTracker() }
     var askDialog by remember { mutableStateOf(false) }
     var tempDialog by remember { mutableStateOf(false) }
     var resumePrompt by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
@@ -356,6 +362,8 @@ private fun AstroContent(
             status = null
             phase = ""
             savedCount = 0
+            liveDone = 0
+            stackFraction = null
             frameIndex = 0
             val app = latestSettings
             frameTotal = app.frameCount
@@ -395,6 +403,7 @@ private fun AstroContent(
                     liveJob = scope.launch(Dispatchers.Default) {
                         for ((index, bytes) in liveChannel) {
                             if (live.add(bytes)) liveAdded += index
+                            liveDone++
                         }
                     }
                 }
@@ -418,12 +427,16 @@ private fun AstroContent(
                     batchNo++
                     val refs = batchFrames.toList()
                     batchFrames.clear()
-                    phase = "Stacking batch $batchNo…"
+                    phase = "Batch $batchNo · starting…"
                     val info = SessionInfo(
                         "${session}_B%02d".format(Locale.US, batchNo), refs, used.exposureNs, used.iso, used.manual,
                     )
+                    val batchCount = max(1, (total + batch - 1) / max(1, batch))
                     val r = try {
-                        Stacker.stack(context, info, method, false, folder = "AstroCamera/STACKED/BATCHES", previews = false) { _, _ -> }
+                        Stacker.stack(context, info, method, false, folder = "AstroCamera/STACKED/BATCHES", previews = false) { _, f ->
+                            stackFraction = (batchNo - 1 + f) / (batchCount + 1f)
+                            phase = "Batch $batchNo of $batchCount · ${(f * 100).roundToInt()}%"
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -520,15 +533,24 @@ private fun AstroContent(
                         } else if (batch == 0) {
                             phase = "Stacking ${savedFrames.size} frames…"
                             val info = SessionInfo(session, savedFrames.toList(), used.exposureNs, used.iso, used.manual)
-                            finalResult = Stacker.stack(context, info, method, app.boost) { label, _ -> phase = label }
+                            tracker.begin()
+                            finalResult = Stacker.stack(context, info, method, app.boost) { label, f ->
+                                stackFraction = f
+                                phase = formatProgress(label, f, tracker.etaSeconds(f))
+                            }
                         } else {
                             stackBatch()
                             if (batchImages.isNotEmpty()) {
                                 phase = "Combining ${batchImages.size} batches…"
                                 val info = SessionInfo(session, batchImages.toList(), used.exposureNs, used.iso, used.manual)
+                                tracker.begin()
+                                val batchCount = batchImages.size + batchFailed
                                 finalResult = Stacker.stack(
                                     context, info, method, app.boost, weights = batchWeights.toList(),
-                                ) { label, _ -> phase = label }
+                                ) { label, f ->
+                                    stackFraction = (batchCount + f) / (batchCount + 1f)
+                                    phase = formatProgress(label, f, tracker.etaSeconds(f))
+                                }
                             }
                         }
                     } catch (e: CancellationException) {
@@ -556,9 +578,18 @@ private fun AstroContent(
                     if (batchFailed > 0) append("$batchFailed batch(es) could not be stacked; their frames were kept.")
                 }.trim()
                 status = problems.ifEmpty { null }
+                if (batch >= 0 && result != null && result.verified) {
+                    stackDone = true
+                    vibrate(context)
+                    scope.launch {
+                        delay(2500)
+                        stackDone = false
+                    }
+                }
             } finally {
                 liveChannel.close()
                 liveJob?.cancel()
+                stackFraction = null
                 busy = false
                 countdown = 0
                 phase = ""
@@ -628,6 +659,8 @@ private fun AstroContent(
                 !hasPermission -> "Camera permission is needed for the preview."
                 error != null -> "Preview failed: $error"
                 phase.isNotEmpty() -> phase
+                burst && settings.liveStacking && settings.stackBatch >= 0 ->
+                    "Frame $frameIndex of $frameTotal · $liveDone stacked"
                 burst -> "Frame $frameIndex of $frameTotal · saved $savedCount"
                 status != null -> status.orEmpty()
                 else -> details
@@ -761,11 +794,13 @@ private fun AstroContent(
                 enabled = (canCapture && !busy) || busy,
                 label = when {
                     countdown > 0 -> countdown.toString()
+                    stackDone -> "✓"
                     burst -> frameIndex.toString()
                     busy -> "…"
                     else -> ""
                 },
-                progress = if (burst && frameTotal > 0) frameIndex.toFloat() / frameTotal else null,
+                // While frames are captured the ring shows the burst; while stacking, the stack.
+                progress = stackFraction ?: if (burst && frameTotal > 0) frameIndex.toFloat() / frameTotal else null,
                 onClick = {
                     when {
                         countdown > 0 -> { job?.cancel(); status = "Timer cancelled" }

@@ -31,6 +31,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
+/** A short buzz, for example when stacking is done. */
+internal fun buzz(context: android.content.Context, ms: Long = 150) {
+    runCatching {
+        context.getSystemService(android.os.Vibrator::class.java)
+            ?.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+    }
+}
+
 @Composable
 internal fun SectionTitle(text: String) {
     Text(text, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))

@@ -10,7 +10,7 @@ Astro Camera does not assume every phone is the same. It inspects the device thr
 
 ## Status
 
-Version 0.12.0 covers **Stages 1 to 5**, including a **Stacking Studio**, automatic stacking while capturing, storage-saving options and temperature protection. Earlier stages: capability detection, an experimental **long exposure probe**, a live preview with manual controls, and multi-frame capture with a self-timer. A **RAW capture test** checks whether the phone really supports RAW.
+Version 0.13.0 covers **Stages 1 to 5**, including a **Stacking Studio**, automatic stacking while capturing, storage-saving options and temperature protection. Earlier stages: capability detection, an experimental **long exposure probe**, a live preview with manual controls, and multi-frame capture with a self-timer. A **RAW capture test** checks whether the phone really supports RAW.
 
 | Stage | Scope | State |
 |-------|-------|-------|

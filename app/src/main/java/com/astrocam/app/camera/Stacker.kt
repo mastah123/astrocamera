@@ -203,6 +203,7 @@ object Stacker {
         val out = accumulate()
         if (usedRefs.isEmpty()) return failure("No frame could be read.")
 
+        onProgress("Saving and checking", 0.96f)
         return publish(
             context, out, iw, ih, exifRotation(context, placed.first().ref.location), boost, folder,
             session.session.removePrefix("SESSION_"), mode, usedRefs, usedWeight, rejected,

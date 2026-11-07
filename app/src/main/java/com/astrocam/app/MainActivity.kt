@@ -77,6 +77,7 @@ private fun AstroApp() {
             Screen.Home -> HomeScreen(
                 cameras = cameras,
                 profile = profile,
+                settings = settings,
                 onOpenAstro = { trailsStart = false; screen = Screen.Astro },
                 onOpenTrails = { trailsStart = true; screen = Screen.Astro },
                 onOpenStack = { screen = Screen.Stack },

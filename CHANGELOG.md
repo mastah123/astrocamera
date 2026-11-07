@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-05
+
+### Added
+- Home redesigned around what you are doing: a large Camera card with your newest photo, Star Trails and Stacking Studio tiles (Stacking Studio shows how many captures are ready), and a Phone Check card with manual control, exposure, RAW and live stacking status plus buttons for the Camera Tester and the tests.
+- Settings and the temperature chip moved to the top of Home.
+- Stacking progress with percentage and an estimated time left, in the camera screen details and in Stacking Studio. Estimates start after the first few frames.
+- Batch stacking shows "Batch 2 of 4" with overall progress, and live stacking shows how many frames are stacked so far.
+- The shutter ring fills with the stacking progress and turns into a check mark with a short vibration when stacking is done.
+- Stacking Studio shows "Done" with a short vibration when finished.
+- A "Saving and checking" step so the last part of a stack is not silent.
+
+### Changed
+- Home buttons grouped by task instead of a list of equal buttons.
+
 ## [0.12.0] - 2026-11-05
 
 ### Added
