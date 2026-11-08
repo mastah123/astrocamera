@@ -66,9 +66,11 @@ object Stacker {
         weights: List<Int>? = null,
         folder: String = "AstroCamera/STACKED",
         previews: Boolean = true,
+        bin: Boolean = false,
+        dark: DarkFrame? = null,
         onProgress: (String, Float) -> Unit,
     ): StackResult = withContext(Dispatchers.Default) {
-        run(context, session, mode, boost, weights, folder, previews, onProgress)
+        run(context, session, mode, boost, weights, folder, previews, bin, dark, onProgress)
     }
 
     private fun failure(message: String) =
@@ -82,6 +84,8 @@ object Stacker {
         weights: List<Int>?,
         folder: String,
         previews: Boolean,
+        bin: Boolean,
+        dark: DarkFrame?,
         onProgress: (String, Float) -> Unit,
     ): StackResult {
         val refs = session.frames.take(MAX_FRAMES)
@@ -109,7 +113,7 @@ object Stacker {
                 if (refStars == null) {
                     refStars = stars
                     refHalf = size
-                    alignable = stars.size >= 5
+                    alignable = stars.size >= 8
                     if (!alignable) note = "Not enough stars to align, so frames were stacked without alignment."
                     placed += Placed(ref, 0, 0, weightOf(index))
                 } else if (!alignable) {
@@ -143,6 +147,11 @@ object Stacker {
         suspend fun accumulate(): IntArray {
             val acc = IntArray(iw * ih * 3)
             val pixels = IntArray(width * height)
+            // Dropping the highest and lowest value of every pixel removes hot pixels, satellites and aircraft.
+            val trim = average && weights == null && placed.size >= 5
+            val highest = if (trim) ByteArray(iw * ih * 3) else null
+            val lowest = if (trim) ByteArray(iw * ih * 3).also { it.fill(-1) } else null
+            val dk = dark?.takeIf { it.width == width && it.height == height }?.pixels
             for ((i, p) in placed.withIndex()) {
                 currentCoroutineContext().ensureActive()
                 onProgress("Stacking ${i + 1} of ${placed.size}", 0.3f + 0.6f * i / placed.size)
@@ -159,14 +168,29 @@ object Stacker {
                     val rowBase = (oy + y0 - p.sy) * width + (x0 - p.sx)
                     var d = oy * iw * 3
                     for (ox in 0 until iw) {
-                        val px = pixels[rowBase + ox]
-                        val r = (px shr 16) and 0xFF
-                        val g = (px shr 8) and 0xFF
-                        val b = px and 0xFF
+                        val index = rowBase + ox
+                        val px = pixels[index]
+                        var r = (px shr 16) and 0xFF
+                        var g = (px shr 8) and 0xFF
+                        var b = px and 0xFF
+                        if (dk != null) {
+                            val q = dk[index]
+                            r = max(0, r - ((q shr 16) and 0xFF))
+                            g = max(0, g - ((q shr 8) and 0xFF))
+                            b = max(0, b - (q and 0xFF))
+                        }
                         if (average) {
                             acc[d] += r * wgt
                             acc[d + 1] += g * wgt
                             acc[d + 2] += b * wgt
+                            if (highest != null && lowest != null) {
+                                if (r > (highest[d].toInt() and 0xFF)) highest[d] = r.toByte()
+                                if (g > (highest[d + 1].toInt() and 0xFF)) highest[d + 1] = g.toByte()
+                                if (b > (highest[d + 2].toInt() and 0xFF)) highest[d + 2] = b.toByte()
+                                if (r < (lowest[d].toInt() and 0xFF)) lowest[d] = r.toByte()
+                                if (g < (lowest[d + 1].toInt() and 0xFF)) lowest[d + 1] = g.toByte()
+                                if (b < (lowest[d + 2].toInt() and 0xFF)) lowest[d + 2] = b.toByte()
+                            }
                         } else {
                             if (r > acc[d]) acc[d] = r
                             if (g > acc[d + 1]) acc[d + 1] = g
@@ -187,7 +211,12 @@ object Stacker {
                 val r: Int
                 val g: Int
                 val b: Int
-                if (average) {
+                if (average && highest != null && lowest != null && usedWeight >= 5) {
+                    val keep = usedWeight - 2
+                    r = (acc[d] - (highest[d].toInt() and 0xFF) - (lowest[d].toInt() and 0xFF) + keep / 2) / keep
+                    g = (acc[d + 1] - (highest[d + 1].toInt() and 0xFF) - (lowest[d + 1].toInt() and 0xFF) + keep / 2) / keep
+                    b = (acc[d + 2] - (highest[d + 2].toInt() and 0xFF) - (lowest[d + 2].toInt() and 0xFF) + keep / 2) / keep
+                } else if (average) {
                     r = (acc[d] + usedWeight / 2) / usedWeight
                     g = (acc[d + 1] + usedWeight / 2) / usedWeight
                     b = (acc[d + 2] + usedWeight / 2) / usedWeight
@@ -207,7 +236,7 @@ object Stacker {
         return publish(
             context, out, iw, ih, exifRotation(context, placed.first().ref.location), boost, folder,
             session.session.removePrefix("SESSION_"), mode, usedRefs, usedWeight, rejected,
-            weights?.sum() ?: total, note, placed.first().ref, previews, true,
+            weights?.sum() ?: total, note, placed.first().ref, previews, true, bin,
         )
     }
 
@@ -230,16 +259,29 @@ object Stacker {
         originalRef: FrameRef?,
         previews: Boolean,
         save: Boolean,
+        bin: Boolean,
     ): StackResult {
+        // 2 x 2 night mode: four pixels become one, which roughly halves the noise.
+        var px = out
+        var w = iw
+        var h = ih
+        if (bin && iw >= 4 && ih >= 4) {
+            px = binTwo(out, iw, ih)
+            w = iw / 2
+            h = ih / 2
+        }
+        // Dark pictures: smooth the colour noise, then flatten brightness noise that is too weak to be a star.
+        val dark = meanLuma(px) < 60f
+        if (dark) {
+            denoiseChroma(px, w, h, 4)
+            denoiseLuma(px, w, h)
+        }
         // One stretch, taken from the stack, is applied to the stack and to the single-frame preview.
-        // Dark pictures: smooth the colour noise first. Brightness, which holds the stars, is not touched.
-        val dark = meanLuma(out) < 60f
-        if (dark) denoiseChroma(out, iw, ih, 4)
-        val lut = if (boost) buildLut(out, BOOST_GAMMA, dark) else null
-        if (lut != null) applyLut(out, lut)
+        val lut = if (boost) buildLut(px, BOOST_GAMMA, dark) else null
+        if (lut != null) applyLut(px, lut)
 
-        val fullBitmap = Bitmap.createBitmap(iw, ih, Bitmap.Config.ARGB_8888)
-        fullBitmap.setPixels(out, 0, iw, 0, 0, iw, ih)
+        val fullBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        fullBitmap.setPixels(px, 0, w, 0, 0, w, h)
         val upright = rotate(fullBitmap, rotation)
         if (upright !== fullBitmap) fullBitmap.recycle()
         val outW = upright.width
@@ -248,7 +290,7 @@ object Stacker {
         var saved: Saved? = null
         if (save) {
             val jpeg = ByteArrayOutputStream().also { upright.compress(Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
-            val tag = if (mode == StackMode.Average) "${usedWeight}f" else "TRAILS_${usedWeight}f"
+            val tag = (if (mode == StackMode.Average) "${usedWeight}f" else "TRAILS_${usedWeight}f") + if (bin) "_2x2" else ""
             saved = CaptureStore.saveStacked(context, jpeg, "ASTRO_STACK_${label}_$tag.jpg", folder)
         }
         // The result only counts as safe once it has been read back from storage.
@@ -288,7 +330,7 @@ object Stacker {
      * Stacks frames one at a time as they arrive, on a full-size canvas. Call [add] for every
      * frame in order, then [finish]. Not thread-safe: feed it from one coroutine.
      */
-    class Live(private val mode: StackMode) {
+    class Live(private val mode: StackMode, private val dark: DarkFrame? = null) {
         private val average = mode == StackMode.Average
         private var width = 0
         private var height = 0
@@ -337,6 +379,17 @@ object Stacker {
             }
             bmp.getPixels(px, 0, w, 0, 0, w, h)
             bmp.recycle()
+            val dk = dark?.takeIf { it.width == w && it.height == h }?.pixels
+            if (dk != null) {
+                for (i in px.indices) {
+                    val p = px[i]
+                    val q = dk[i]
+                    px[i] = (0xFF shl 24) or
+                        (max(0, ((p shr 16) and 0xFF) - ((q shr 16) and 0xFF)) shl 16) or
+                        (max(0, ((p shr 8) and 0xFF) - ((q shr 8) and 0xFF)) shl 8) or
+                        max(0, (p and 0xFF) - (q and 0xFF))
+                }
+            }
 
             var sx = 0
             var sy = 0
@@ -345,7 +398,7 @@ object Stacker {
                 val ref = refStars
                 if (ref == null) {
                     refStars = stars
-                    alignable = stars.size >= 5
+                    alignable = stars.size >= 8
                 } else if (alignable) {
                     val shift = estimateShift(ref, stars)
                     if (shift == null) {
@@ -399,6 +452,7 @@ object Stacker {
             previews: Boolean,
             usedRefs: List<FrameRef>,
             save: Boolean = true,
+            bin: Boolean = false,
         ): StackResult {
             val sums = acc
             if (sums == null || used == 0) return failure("No frame could be added.")
@@ -427,7 +481,7 @@ object Stacker {
             val note = if (average && !aligned) "Not enough stars to align, so frames were stacked without alignment." else ""
             return publish(
                 context, out, iw, ih, rotation, boost, folder, label, mode, usedRefs, used, rejected,
-                used + rejected, note, null, previews, save,
+                used + rejected, note, null, previews, save, bin,
             )
         }
     }
@@ -547,7 +601,7 @@ object Stacker {
             }
             return publish(
                 context, out, width, height, rotation, boost, folder, label, StackMode.Trails,
-                emptyList(), frames, 0, frames, "", null, previews, save,
+                emptyList(), frames, 0, frames, "", null, previews, save, false,
             )
         }
     }
@@ -630,6 +684,67 @@ object Stacker {
             i += 7
         }
         return if (n == 0) 0f else sum.toFloat() / n
+    }
+
+    /** Four pixels become one. Independent noise drops to about half. */
+    private fun binTwo(px: IntArray, w: Int, h: Int): IntArray {
+        val bw = w / 2
+        val bh = h / 2
+        val out = IntArray(bw * bh)
+        for (y in 0 until bh) {
+            for (x in 0 until bw) {
+                val i = 2 * y * w + 2 * x
+                val a = px[i]
+                val b = px[i + 1]
+                val c = px[i + w]
+                val d = px[i + w + 1]
+                val r = (((a shr 16) and 255) + ((b shr 16) and 255) + ((c shr 16) and 255) + ((d shr 16) and 255) + 2) shr 2
+                val g = (((a shr 8) and 255) + ((b shr 8) and 255) + ((c shr 8) and 255) + ((d shr 8) and 255) + 2) shr 2
+                val bl = ((a and 255) + (b and 255) + (c and 255) + (d and 255) + 2) shr 2
+                out[y * bw + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bl
+            }
+        }
+        return out
+    }
+
+    /**
+     * Flattens brightness noise but keeps anything that stands out. Each pixel is compared with its
+     * 3 x 3 neighbours. If it is within the normal noise spread it is replaced by the neighbourhood
+     * average; if it stands out, as a star or an edge does, it is left alone.
+     */
+    private fun denoiseLuma(px: IntArray, w: Int, h: Int) {
+        val n = px.size
+        val luma = IntArray(n)
+        for (i in 0 until n) {
+            val p = px[i]
+            luma[i] = (77 * ((p shr 16) and 255) + 150 * ((p shr 8) and 255) + 29 * (p and 255)) shr 8
+        }
+        val mean = luma.copyOf()
+        val tmp = IntArray(n)
+        boxBlur(mean, tmp, w, h, 1)
+
+        // How far a normal pixel strays from its neighbours, from a sample (median absolute deviation).
+        val spread = IntArray(256)
+        var samples = 0
+        var i = 0
+        while (i < n) {
+            spread[min(255, abs(luma[i] - mean[i]))]++
+            samples++
+            i += 13
+        }
+        val sigma = max(1f, percentile(spread, samples, 0.5) * 1.4826f)
+        val limit = 2.5f * sigma
+
+        for (j in 0 until n) {
+            val d = luma[j] - mean[j]
+            if (abs(d) <= limit) {
+                val p = px[j]
+                val r = (((p shr 16) and 255) - d).coerceIn(0, 255)
+                val g = (((p shr 8) and 255) - d).coerceIn(0, 255)
+                val b = ((p and 255) - d).coerceIn(0, 255)
+                px[j] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
     }
 
     private fun percentile(hist: IntArray, total: Int, share: Double): Int {
@@ -779,7 +894,8 @@ object Stacker {
         }
         val mean = sum / n
         val std = sqrt(max(sumSq / n - mean * mean, 1.0))
-        val threshold = min((mean + 4.0 * std).toFloat(), 250f)
+        // Real stars stand well above the noise. Anything weaker would be noise mistaken for stars.
+        val threshold = min(max(mean + 5.0 * std, mean + 12.0).toFloat(), 250f)
 
         val candidates = ArrayList<Candidate>()
         for (y in 3 until h - 3) {
@@ -821,7 +937,7 @@ object Stacker {
 
     /** Votes on the shift that lines up most star pairs. Returns null if no shift is convincing. */
     private fun estimateShift(ref: List<Star>, cur: List<Star>): Pair<Float, Float>? {
-        if (ref.size < 5 || cur.size < 5) return null
+        if (ref.size < 8 || cur.size < 8) return null
         val bins = 2 * MAX_SHIFT_HALF + 1
         val hist = IntArray(bins * bins)
         for (r in ref) {
@@ -842,7 +958,7 @@ object Stacker {
                 if (s > bestScore) { bestScore = s; best = y * bins + x }
             }
         }
-        if (best < 0 || bestScore < 5) return null
+        if (best < 0 || bestScore < 8) return null
         val bestDx = best % bins - MAX_SHIFT_HALF
         val bestDy = best / bins - MAX_SHIFT_HALF
 
@@ -860,6 +976,6 @@ object Stacker {
                 }
             }
         }
-        return if (matches >= 5) (sx / matches) to (sy / matches) else null
+        return if (matches >= 8) (sx / matches) to (sy / matches) else null
     }
 }

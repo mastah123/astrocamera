@@ -74,6 +74,7 @@ import com.astrocam.app.camera.CameraInfo
 import com.astrocam.app.camera.CaptureStore
 import com.astrocam.app.camera.ControlLimits
 import com.astrocam.app.camera.CrashLog
+import com.astrocam.app.camera.DarkFrames
 import com.astrocam.app.camera.FrameRef
 import com.astrocam.app.camera.LiveReading
 import com.astrocam.app.camera.ManualSettings
@@ -280,6 +281,24 @@ private fun BoostPill(on: Boolean, modifier: Modifier, onClick: () -> Unit) {
 }
 
 @Composable
+private fun DarkPill(ready: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(14.dp)
+    Text(
+        if (ready) "◐ Dark ✓" else "◐ Dark",
+        style = MaterialTheme.typography.labelLarge,
+        color = if (ready) colors.onPrimary else colors.onBackground,
+        modifier = modifier
+            .padding(8.dp)
+            .clip(shape)
+            .background(if (ready) colors.primary else Color.Black.copy(alpha = 0.55f))
+            .border(1.dp, if (ready) colors.primary else colors.outline, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    )
+}
+
+@Composable
 fun AstroScreen(
     limits: ControlLimits?,
     settings: AppSettings,
@@ -362,6 +381,8 @@ private fun AstroContent(
     var stopRequested by remember { mutableStateOf(false) }
     val tracker = remember { ProgressTracker() }
     var askDialog by remember { mutableStateOf(false) }
+    var darkDialog by remember { mutableStateOf(false) }
+    var darkTick by remember { mutableStateOf(0) }
     var tempDialog by remember { mutableStateOf(false) }
     var resumePrompt by remember { mutableStateOf<CompletableDeferred<Boolean>?>(null) }
 
@@ -378,6 +399,10 @@ private fun AstroContent(
     val latestManual by rememberUpdatedState(ms)
     val latestSettings by rememberUpdatedState(settings)
     val latestTrails by rememberUpdatedState(trails)
+    // A dark frame matches one exposure and ISO. Re-checked whenever those change or one is captured.
+    val darkAvailable = remember(ms.exposureNs, ms.iso, ms.manual, darkTick) {
+        ms.manual && DarkFrames.exists(context, ms.exposureNs, ms.iso)
+    }
 
     val exposureSnaps = remember(limits) { exposureSnaps(limits) }
     val isoSnaps = remember(limits) { isoSnaps(limits) }
@@ -463,7 +488,11 @@ private fun AstroContent(
             val app = latestSettings
             frameTotal = app.frameCount
             val method = StackMode.Average
-            val live = if (app.liveStacking && app.stackBatch >= 0 && app.frameCount > 1) Stacker.Live(method) else null
+            val darkFor = latestManual
+            val dark = if (darkFor.manual) {
+                withContext(Dispatchers.IO) { DarkFrames.load(context, darkFor.exposureNs, darkFor.iso) }
+            } else null
+            val live = if (app.liveStacking && app.stackBatch >= 0 && app.frameCount > 1) Stacker.Live(method, dark) else null
             val liveChannel = Channel<Pair<Int, ByteArray>>(2)
             val liveAdded = Collections.synchronizedSet(mutableSetOf<Int>())
             var liveJob: Job? = null
@@ -528,7 +557,7 @@ private fun AstroContent(
                     )
                     val batchCount = max(1, (total + batch - 1) / max(1, batch))
                     val r = try {
-                        Stacker.stack(context, info, method, false, folder = "AstroCamera/STACKED/BATCHES", previews = false) { _, f ->
+                        Stacker.stack(context, info, method, false, folder = "AstroCamera/STACKED/BATCHES", previews = false, dark = dark) { _, f ->
                             stackFraction = (batchNo - 1 + f) / (batchCount + 1f)
                             phase = "Batch $batchNo of $batchCount · ${(f * 100).roundToInt()}%"
                         }
@@ -623,13 +652,13 @@ private fun AstroContent(
                             phase = "Saving the live stack…"
                             val addedRefs = savedFrames.filter { it.frame in liveAdded }
                             finalResult = withContext(Dispatchers.Default) {
-                                live.finish(context, session.removePrefix("SESSION_"), app.boost, "AstroCamera/STACKED", true, addedRefs)
+                                live.finish(context, session.removePrefix("SESSION_"), app.boost, "AstroCamera/STACKED", true, addedRefs, true, app.nightBin)
                             }
                         } else if (batch == 0) {
                             phase = "Stacking ${savedFrames.size} frames…"
                             val info = SessionInfo(session, savedFrames.toList(), used.exposureNs, used.iso, used.manual)
                             tracker.begin()
-                            finalResult = Stacker.stack(context, info, method, app.boost) { label, f ->
+                            finalResult = Stacker.stack(context, info, method, app.boost, bin = app.nightBin, dark = dark) { label, f ->
                                 stackFraction = f
                                 phase = formatProgress(label, f, tracker.etaSeconds(f))
                             }
@@ -641,7 +670,7 @@ private fun AstroContent(
                                 tracker.begin()
                                 val batchCount = batchImages.size + batchFailed
                                 finalResult = Stacker.stack(
-                                    context, info, method, app.boost, weights = batchWeights.toList(),
+                                    context, info, method, app.boost, weights = batchWeights.toList(), bin = app.nightBin,
                                 ) { label, f ->
                                     stackFraction = (batchCount + f) / (batchCount + 1f)
                                     phase = formatProgress(label, f, tracker.etaSeconds(f))
@@ -869,6 +898,41 @@ private fun AstroContent(
         }
     }
 
+    fun captureDark() {
+        val cfg = config ?: return
+        job = scope.launch {
+            busy = true
+            status = null
+            val used = latestManual
+            val builder = DarkFrames.Builder()
+            try {
+                for (i in 1..DarkFrames.FRAMES) {
+                    phase = "Dark frames $i of ${DarkFrames.FRAMES} · keep the lens covered"
+                    stackFraction = i / DarkFrames.FRAMES.toFloat()
+                    val outcome = controller.capture(used, cfg.sensorOrientation, true) ?: continue
+                    withContext(Dispatchers.Default) { builder.add(outcome.jpeg) }
+                }
+                phase = "Saving the dark frame…"
+                val saved = withContext(Dispatchers.IO) { builder.save(context, used.exposureNs, used.iso) }
+                if (saved) {
+                    darkTick++
+                    stackDone = true
+                    vibrate(context)
+                    scope.launch {
+                        delay(2500)
+                        stackDone = false
+                    }
+                } else {
+                    status = "The dark frame could not be saved. Keep the lens covered and try again."
+                }
+            } finally {
+                stackFraction = null
+                busy = false
+                phase = ""
+            }
+        }
+    }
+
     // One place that starts whichever kind of session the screen is in.
     fun begin(deleteOriginals: Boolean) {
         if (latestTrails) shootTrails(deleteOriginals) else shoot(deleteOriginals)
@@ -906,6 +970,8 @@ private fun AstroContent(
         }
         if (settings.timerSeconds > 0) append(" · ${settings.timerSeconds}s timer")
         if (settings.boost) append(" · boost")
+        if (ms.manual && darkAvailable) append(" · dark ✓")
+        if (settings.nightBin) append(" · 2×2")
         if (settings.frameCount > 1 && settings.stackBatch >= 0) {
             append(" · stack ${StackPlan.short(settings.stackBatch)}")
             if (settings.liveStacking) append(" (live)")
@@ -995,6 +1061,13 @@ private fun AstroContent(
                 )
                 BoostPill(settings.boost, Modifier.align(Alignment.TopEnd)) {
                     onSettings(settings.copy(boost = !settings.boost))
+                }
+                DarkPill(darkAvailable, Modifier.align(Alignment.TopStart)) {
+                    when {
+                        busy -> Unit
+                        !ms.manual -> status = "Switch to Manual first. A dark frame matches one exposure and ISO."
+                        else -> darkDialog = true
+                    }
                 }
                 if (showPanel) {
                     val at = Modifier.align(Alignment.BottomCenter)
@@ -1152,6 +1225,20 @@ private fun AstroContent(
         }
     }
 
+    if (darkDialog) {
+        AlertDialog(
+            onDismissRequest = { darkDialog = false },
+            title = { Text("Capture dark frames") },
+            text = {
+                Text(
+                    "Cover the lens completely. ${DarkFrames.FRAMES} frames are taken at $exposureText and ISO ${ms.iso}. " +
+                        "They are used to remove hot pixels and fixed noise from stacks made at these settings."
+                )
+            },
+            confirmButton = { TextButton(onClick = { darkDialog = false; captureDark() }) { Text("Start") } },
+            dismissButton = { TextButton(onClick = { darkDialog = false }) { Text("Cancel") } },
+        )
+    }
     if (askDialog) {
         AlertDialog(
             onDismissRequest = { askDialog = false },

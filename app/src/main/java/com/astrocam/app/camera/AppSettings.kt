@@ -41,6 +41,7 @@ data class AppSettings(
     val askOriginals: Boolean = false,
     val boost: Boolean = false,
     val liveStacking: Boolean = false,
+    val nightBin: Boolean = false,
     val trailFrames: Int = 3,
     val trailInterval: Int = 10,
     val trailMinutes: Int = 30,
@@ -75,6 +76,7 @@ object SettingsStore {
             askOriginals = if (p.contains("ask_originals")) p.getBoolean("ask_originals", false) else legacy == "Ask",
             boost = p.getBoolean("boost_preview", d.boost),
             liveStacking = p.getBoolean("live_stacking", d.liveStacking),
+            nightBin = p.getBoolean("night_bin", d.nightBin),
             trailFrames = p.getInt("trail_frames", d.trailFrames),
             trailInterval = p.getInt("trail_interval", d.trailInterval),
             trailMinutes = p.getInt("trail_minutes", d.trailMinutes),
@@ -93,6 +95,7 @@ object SettingsStore {
             .putBoolean("ask_originals", s.askOriginals)
             .putBoolean("boost_preview", s.boost)
             .putBoolean("live_stacking", s.liveStacking)
+            .putBoolean("night_bin", s.nightBin)
             .putInt("trail_frames", s.trailFrames)
             .putInt("trail_interval", s.trailInterval)
             .putInt("trail_minutes", s.trailMinutes)

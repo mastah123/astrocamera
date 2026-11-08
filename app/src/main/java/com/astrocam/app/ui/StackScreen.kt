@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.astrocam.app.camera.AppSettings
 import com.astrocam.app.camera.CaptureLog
 import com.astrocam.app.camera.CrashLog
+import com.astrocam.app.camera.DarkFrames
 import com.astrocam.app.camera.Originals
 import com.astrocam.app.camera.OriginalsPolicy
 import com.astrocam.app.camera.ProgressTracker
@@ -47,7 +48,9 @@ import com.astrocam.app.camera.StackResult
 import com.astrocam.app.camera.Stacker
 import com.astrocam.app.camera.formatExposure
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,6 +65,7 @@ fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
     var selected by remember { mutableStateOf(0) }
     var mode by remember { mutableStateOf(StackMode.Average) }
     var boost by remember { mutableStateOf(settings.boost) }
+    var binOn by remember { mutableStateOf(settings.nightBin) }
     var running by remember { mutableStateOf(false) }
     var progressLabel by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf(0f) }
@@ -130,6 +134,23 @@ fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
                     }
                     Switch(checked = boost, onCheckedChange = { boost = it }, enabled = !running)
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Night noise reduction (2×2)")
+                        Text("Halves the picture size and cuts noise about 2×", style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant)
+                    }
+                    Switch(checked = binOn, onCheckedChange = { binOn = it }, enabled = !running)
+                }
+                val chosenSession = sessions.getOrNull(selected)
+                val darkUsed = chosenSession != null && chosenSession.manual &&
+                    DarkFrames.exists(context, chosenSession.exposureNs, chosenSession.iso)
+                Text(
+                    if (darkUsed) "Dark frame: found for this capture and will be subtracted"
+                    else "Dark frame: none. Cover the lens and tap ◐ Dark on the camera screen to make one",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                )
                 Text(
                     "Original frames after stacking: ${settings.originals.label.lowercase()} (change in Settings)",
                     style = MaterialTheme.typography.bodySmall,
@@ -154,7 +175,10 @@ fun StackScreen(settings: AppSettings, onBack: () -> Unit) {
                             progress = 0f
                             try {
                                 tracker.begin()
-                                val r = Stacker.stack(context, chosen, mode, boost) { label, fraction ->
+                                val dark = if (chosen.manual) {
+                                    withContext(Dispatchers.IO) { DarkFrames.load(context, chosen.exposureNs, chosen.iso) }
+                                } else null
+                                val r = Stacker.stack(context, chosen, mode, boost, bin = binOn, dark = dark) { label, fraction ->
                                     progressLabel = formatProgress(label, fraction, tracker.etaSeconds(fraction))
                                     progress = fraction
                                 }

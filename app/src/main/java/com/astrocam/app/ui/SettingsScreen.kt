@@ -120,6 +120,17 @@ fun SettingsScreen(
                     color = colors.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Night noise reduction (2×2)")
+                        Text(
+                            "Combines four pixels into one. Halves the picture size and cuts noise about 2×",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = settings.nightBin, onCheckedChange = { onSettings(settings.copy(nightBin = it)) })
+                }
             }
 
             SectionTitle("Original frames after stacking")

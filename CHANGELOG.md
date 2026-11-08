@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-05
+
+### Added
+- Outlier rejection: with five or more frames, the highest and lowest value of every pixel are dropped before averaging. This removes hot pixels, satellites and aircraft trails.
+- Dark frames: cover the lens and tap Dark on the preview. 16 frames at the current exposure and ISO are averaged into a dark picture, which is subtracted from stacks made at those settings. Each exposure and ISO keeps its own dark. Studio and the camera screen show whether one is in use.
+- Night noise reduction (2×2) in Settings and Stacking Studio: four pixels become one, roughly halving the noise at a quarter of the size.
+- Stronger denoising of dark pictures: besides smoothing colour noise, brightness noise that is too weak to be a star is flattened, while anything that stands out is left alone.
+
+### Changed
+- Alignment is stricter: star detection needs a clearer peak above the noise, and at least 8 stars and 8 matches, so noise is no longer mistaken for stars. A picture with too few stars is stacked without alignment, as for a tripod.
+- Dark frames and 2×2 mode apply to bursts, batches, live stacking and Stacking Studio.
+
 ## [0.15.0] - 2026-11-05
 
 ### Added
