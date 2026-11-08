@@ -37,10 +37,9 @@ data class AppSettings(
     val frameCount: Int = 1,
     val timerSeconds: Int = 0,
     val stackBatch: Int = -1,
-    val autoMethod: StackMode = StackMode.Average,
     val deleteOriginals: Boolean = false,
     val askOriginals: Boolean = false,
-    val boost: Boolean = true,
+    val boost: Boolean = false,
     val liveStacking: Boolean = false,
     val trailFrames: Int = 3,
     val trailInterval: Int = 10,
@@ -72,10 +71,9 @@ object SettingsStore {
             frameCount = p.getInt("frame_count", d.frameCount),
             timerSeconds = p.getInt("timer_seconds", d.timerSeconds),
             stackBatch = p.getInt("stack_batch", d.stackBatch),
-            autoMethod = p.enum("auto_method", d.autoMethod),
             deleteOriginals = if (p.contains("delete_originals")) p.getBoolean("delete_originals", false) else legacy == "Delete",
             askOriginals = if (p.contains("ask_originals")) p.getBoolean("ask_originals", false) else legacy == "Ask",
-            boost = p.getBoolean("boost", d.boost),
+            boost = p.getBoolean("boost_preview", d.boost),
             liveStacking = p.getBoolean("live_stacking", d.liveStacking),
             trailFrames = p.getInt("trail_frames", d.trailFrames),
             trailInterval = p.getInt("trail_interval", d.trailInterval),
@@ -91,10 +89,9 @@ object SettingsStore {
             .putInt("frame_count", s.frameCount)
             .putInt("timer_seconds", s.timerSeconds)
             .putInt("stack_batch", s.stackBatch)
-            .putString("auto_method", s.autoMethod.name)
             .putBoolean("delete_originals", s.deleteOriginals)
             .putBoolean("ask_originals", s.askOriginals)
-            .putBoolean("boost", s.boost)
+            .putBoolean("boost_preview", s.boost)
             .putBoolean("live_stacking", s.liveStacking)
             .putInt("trail_frames", s.trailFrames)
             .putInt("trail_interval", s.trailInterval)

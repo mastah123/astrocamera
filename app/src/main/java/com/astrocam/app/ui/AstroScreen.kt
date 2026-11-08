@@ -9,11 +9,15 @@ import android.view.WindowManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.TextureView
+import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -236,6 +240,45 @@ private fun makeThumb(jpeg: ByteArray, rotation: Int): Bitmap? {
     return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(rotation.toFloat()) }, true)
 }
 
+// Brightens only what you see in the viewfinder, so you can aim in the dark. Photos are not changed.
+private const val PREVIEW_GAIN = 6f
+private const val PREVIEW_BLACK = 6f
+
+private fun applyPreviewBoost(view: TextureView, on: Boolean) {
+    if (on) {
+        val offset = -PREVIEW_GAIN * PREVIEW_BLACK
+        val matrix = ColorMatrix(
+            floatArrayOf(
+                PREVIEW_GAIN, 0f, 0f, 0f, offset,
+                0f, PREVIEW_GAIN, 0f, 0f, offset,
+                0f, 0f, PREVIEW_GAIN, 0f, offset,
+                0f, 0f, 0f, 1f, 0f,
+            )
+        )
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) })
+    } else {
+        view.setLayerType(View.LAYER_TYPE_NONE, null)
+    }
+}
+
+@Composable
+private fun BoostPill(on: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(14.dp)
+    Text(
+        if (on) "☀ Boost on" else "☀ Boost",
+        style = MaterialTheme.typography.labelLarge,
+        color = if (on) colors.onPrimary else colors.onBackground,
+        modifier = modifier
+            .padding(8.dp)
+            .clip(shape)
+            .background(if (on) colors.primary else Color.Black.copy(alpha = 0.55f))
+            .border(1.dp, if (on) colors.primary else colors.outline, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    )
+}
+
 @Composable
 fun AstroScreen(
     limits: ControlLimits?,
@@ -299,7 +342,7 @@ private fun AstroContent(
     var isoFrac by remember { mutableStateOf(limits.isoFraction(800)) }
     var focusFrac by remember { mutableStateOf(0f) }
     var autoFocus by remember { mutableStateOf(false) }
-    var trails by remember { mutableStateOf(startInTrails) }
+    val trails = startInTrails
 
     var countdown by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
@@ -419,7 +462,7 @@ private fun AstroContent(
             frameIndex = 0
             val app = latestSettings
             frameTotal = app.frameCount
-            val method = if (latestTrails) StackMode.Trails else app.autoMethod
+            val method = StackMode.Average
             val live = if (app.liveStacking && app.stackBatch >= 0 && app.frameCount > 1) Stacker.Live(method) else null
             val liveChannel = Channel<Pair<Int, ByteArray>>(2)
             val liveAdded = Collections.synchronizedSet(mutableSetOf<Int>())
@@ -862,6 +905,7 @@ private fun AstroContent(
             append(" · ≈ ${formatStorage(sizeEach)}")
         }
         if (settings.timerSeconds > 0) append(" · ${settings.timerSeconds}s timer")
+        if (settings.boost) append(" · boost")
         if (settings.frameCount > 1 && settings.stackBatch >= 0) {
             append(" · stack ${StackPlan.short(settings.stackBatch)}")
             if (settings.liveStacking) append(" (live)")
@@ -897,10 +941,10 @@ private fun AstroContent(
             TextButton(onClick = onBack, enabled = !busy) { Text("‹ Back") }
             Text(readout, modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium)
-            TextButton(
-                onClick = { if (trails) trails = false else { trails = true; enterTrails() } },
-                enabled = !busy,
-            ) { Text(if (trails) "★ Trails" else "☆ Trails") }
+            if (trails) {
+                Text("★ Trails", style = MaterialTheme.typography.labelLarge, color = colors.primary,
+                    modifier = Modifier.padding(horizontal = 6.dp))
+            }
             TempChip(thermal, level) { tempDialog = true }
             Spacer(Modifier.width(8.dp))
         }
@@ -947,7 +991,11 @@ private fun AstroContent(
                         }
                     },
                     modifier = Modifier.fillMaxSize(),
+                    update = { tv -> applyPreviewBoost(tv, settings.boost) },
                 )
+                BoostPill(settings.boost, Modifier.align(Alignment.TopEnd)) {
+                    onSettings(settings.copy(boost = !settings.boost))
+                }
                 if (showPanel) {
                     val at = Modifier.align(Alignment.BottomCenter)
                     when (active) {

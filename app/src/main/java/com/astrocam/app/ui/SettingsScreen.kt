@@ -113,18 +113,13 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant,
                 )
-                Text("Method", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-                StackMode.values().forEach { m ->
-                    OptionRow(settings.autoMethod == m, m.label, m.hint) { onSettings(settings.copy(autoMethod = m)) }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Brightness boost")
-                        Text("Brightens faint detail in the final stack", style = MaterialTheme.typography.bodySmall,
-                            color = colors.onSurfaceVariant)
-                    }
-                    Switch(checked = settings.boost, onCheckedChange = { onSettings(settings.copy(boost = it)) })
-                }
+                Text(
+                    "Stacking always lines up the stars and averages. Star trails are made from Star Trails on Home. " +
+                        "Brightness boost is on the camera screen, over the live preview.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
 
             SectionTitle("Original frames after stacking")

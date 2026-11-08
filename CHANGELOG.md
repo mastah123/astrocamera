@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-05
+
+### Added
+- Boost button over the live preview. It brightens the viewfinder so you can aim in the dark, and the same switch brightens the final stack. It affects only what you see until a stack is made; the photos themselves are not changed.
+
+### Removed
+- The stacking method choice in Settings. Normal bursts always line up the stars and average. Star trails are made from Star Trails on Home, or per stack in Stacking Studio.
+- The Trails toggle on the camera screen. Star Trails mode is entered from Home, and the camera screen shows a ★ Trails label while it is on.
+- The Brightness boost switch in Settings. It moved to the live preview.
+
+### Changed
+- Boost is off by default. An earlier saved on setting is not carried over, so the viewfinder is not blown out in daylight.
+
 ## [0.14.1] - 2026-11-05
 
 ### Fixed
